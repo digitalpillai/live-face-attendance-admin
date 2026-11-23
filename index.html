@@ -1,8 +1,10 @@
 <!doctype html>
-<!-- index.html | Version: V3
+<!-- index.html | Version: V4
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
+     V4: "Add many employees": paste rows copied from Excel to create many logins at once
+         (username and first password = mobile number), then download the list.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -68,6 +70,9 @@
     dialog::backdrop { background: rgba(0, 0, 0, .35); }
     label.check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text); font-size: 14px; }
     label.check input { width: auto; }
+    textarea { width: 100%; min-height: 150px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+               font: inherit; font-size: 13px; resize: vertical; tab-size: 12; }
+    td.result { white-space: normal; min-width: 220px; }
   </style>
 </head>
 <body>
@@ -156,6 +161,29 @@
         </div>
         <p class="muted">They log in to the app with their mobile number. Their first password is also their mobile number.</p>
         <div id="staffMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>Add many employees (from Excel)</h2>
+        <p class="muted">In Excel, select the rows, including the heading row, and press Ctrl+C. Click in the box below
+          and press Ctrl+V. The sheet needs a name column and a mobile number column; a showroom (or branch) column is
+          optional. Other columns are ignored.</p>
+        <textarea id="bulkInput" spellcheck="false"
+          placeholder="Paste here from Excel, for example:&#10;Name&#9;Mobile&#9;Showroom&#10;Ravi Kumar&#9;9876543210&#9;Main Showroom"></textarea>
+        <div class="row" style="margin-top:8px">
+          <div><label for="bulkShowroom">Showroom for rows that don't name one</label><select id="bulkShowroom"></select></div>
+          <div style="flex:0 0 auto"><button id="bulkCreateBtn" type="button" disabled>Create logins</button></div>
+          <div style="flex:0 0 auto"><button id="bulkDownloadBtn" type="button" class="secondary hidden">Download the list</button></div>
+          <div style="flex:0 0 auto"><button id="bulkClearBtn" type="button" class="secondary">Clear</button></div>
+        </div>
+        <div id="bulkMsg" class="msg"></div>
+        <div id="bulkPreview" class="table-wrap hidden">
+          <table>
+            <thead><tr><th>Row</th><th>Name</th><th>Username (mobile)</th><th>Showroom</th><th>Result</th></tr></thead>
+            <tbody id="bulkRows"></tbody>
+          </table>
+        </div>
+        <p class="muted">Each person's username and first password are their mobile number. People already in the staff
+          list are skipped, so if some rows fail you can simply paste the whole list again.</p>
       </div>
       <div class="card">
         <h2>All staff</h2>
@@ -362,6 +390,12 @@
       const currentNew = newSr.value;
       newSr.innerHTML = showroomOptions();
       if (currentNew) newSr.value = currentNew;
+
+      // Default showroom in "Add many employees"
+      const bulkSr = $('bulkShowroom');
+      const currentBulk = bulkSr.value;
+      bulkSr.innerHTML = '<option value="">None (each row names its showroom)</option>' + showroomOptions();
+      bulkSr.value = currentBulk;
     }
 
     // Active staff for the chosen showroom
@@ -668,6 +702,245 @@
       } finally {
         $('savePwBtn').disabled = false;
       }
+    });
+
+    // ======================= Add many employees (pasted from Excel) =======================
+    let bulkRows = [];   // one entry per pasted row, with its check result
+    let bulkBusy = false; // true while logins are being created
+    let bulkTimer = null;
+
+    // "+91 98765-43210", "919876543210" or "09876543210" -> "9876543210"
+    function cleanMobile(value) {
+      let digits = String(value ?? '').replace(/\D/g, '');
+      if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+      if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+      return digits;
+    }
+    const isMobile = (digits) => /^[6-9]\d{9}$/.test(digits);
+
+    // Excel copies cells separated by tabs; a CSV file uses commas (and quotes around values with commas)
+    function splitLine(line) {
+      const sep = line.includes('\t') ? '\t' : ',';
+      const cells = [];
+      let cell = '';
+      let quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quoted) {
+          if (ch === '"' && line[i + 1] === '"') { cell += '"'; i++; }
+          else if (ch === '"') quoted = false;
+          else cell += ch;
+        } else if (ch === '"' && cell.trim() === '') {
+          quoted = true;
+        } else if (ch === sep) {
+          cells.push(cell);
+          cell = '';
+        } else {
+          cell += ch;
+        }
+      }
+      cells.push(cell);
+      return cells.map((c) => c.replace(/\s+/g, ' ').trim());
+    }
+
+    // Finds a showroom by name: exact first ("main showroom" = "Main Showroom"), then a single partial match
+    const simplify = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    function findShowroom(text) {
+      const key = simplify(text);
+      if (!key) return null;
+      const exact = showrooms.find((s) => simplify(s.name) === key);
+      if (exact) return exact;
+      const partial = showrooms.filter((s) => {
+        const name = simplify(s.name);
+        return name && (name.includes(key) || key.includes(name));
+      });
+      return partial.length === 1 ? partial[0] : null;
+    }
+
+    // Index of the biggest number in a list, or -1 when all are 0
+    function bestColumn(counts, skip = []) {
+      let best = -1;
+      counts.forEach((n, i) => {
+        if (n > 0 && !skip.includes(i) && (best < 0 || n > counts[best])) best = i;
+      });
+      return best;
+    }
+
+    // Reads the pasted text and checks every row
+    function parseBulk(text) {
+      const table = text.split(/\r?\n/).filter((l) => l.trim() !== '').map(splitLine);
+      if (!table.length) return { rows: [] };
+      const width = Math.max(...table.map((r) => r.length));
+
+      // A heading row has no mobile number in it and a heading such as Name or Mobile
+      const first = table[0];
+      const isHeading = !first.some((c) => isMobile(cleanMobile(c))) &&
+        first.some((c) => /mobile|phone|contact|cell|\bph\b|\bname\b/i.test(c));
+
+      let nameCol, phoneCol, srCol;
+      if (isHeading) {
+        phoneCol = first.findIndex((c) => /mobile|phone|contact|cell|whats\s*app|\bph\b/i.test(c));
+        srCol = first.findIndex((c) => /showroom|branch|location|outlet|dealer|store|site/i.test(c));
+        nameCol = first.findIndex((c, i) => i !== srCol && i !== phoneCol && /name/i.test(c));
+      } else {
+        // No heading: work out the columns from what is in them
+        const count = (test) => Array.from({ length: width },
+          (_, i) => table.filter((r) => test(r[i] ?? '')).length);
+        phoneCol = bestColumn(count((c) => isMobile(cleanMobile(c))));
+        srCol = bestColumn(count((c) => !!findShowroom(c)), [phoneCol]);
+        nameCol = bestColumn(count((c) => /[a-z]/i.test(c)), [phoneCol, srCol]);
+      }
+      if (phoneCol < 0) {
+        return { error: 'Could not find the mobile number column. Include the heading row, with a heading such as "Mobile".' };
+      }
+      if (nameCol < 0) {
+        return { error: 'Could not find the name column. Include the heading row, with a heading such as "Name".' };
+      }
+
+      const fallback = showrooms.find((s) => String(s.id) === $('bulkShowroom').value) || null;
+      const seen = new Map(); // mobile number -> row number
+      const rows = (isHeading ? table.slice(1) : table).map((cells, i) => {
+        const row = {
+          n: i + 1,
+          name: cells[nameCol] ?? '',
+          raw: cells[phoneCol] ?? '',
+          phone: cleanMobile(cells[phoneCol]),
+          srText: srCol >= 0 ? (cells[srCol] ?? '') : '',
+          showroom: null,
+          status: 'ready',
+          note: '',
+        };
+        const problem = (note) => { row.status = 'problem'; row.note = note; return row; };
+
+        if (!row.name) return problem('The name is missing.');
+        if (!isMobile(row.phone)) {
+          return problem(`"${row.raw || '(empty)'}" is not a 10-digit mobile number.`);
+        }
+        const existing = employees.find((e) => e.phone === row.phone);
+        if (existing) {
+          return problem(`Already in the staff list as ${existing.full_name}` +
+            (existing.is_active ? '.' : ' (inactive: use Edit to make them active again).'));
+        }
+        if (seen.has(row.phone)) return problem(`Same mobile number as row ${seen.get(row.phone)}.`);
+        seen.set(row.phone, row.n);
+
+        row.showroom = row.srText ? findShowroom(row.srText) : fallback;
+        if (row.srText && !row.showroom) {
+          return problem(`Showroom "${row.srText}" not found. Add it in the Showrooms tab or correct the name.`);
+        }
+        if (!row.showroom) return problem('No showroom. Choose one in "Showroom for rows that don\'t name one".');
+        return row;
+      });
+      return { rows };
+    }
+
+    function renderBulkRows() {
+      const badge = {
+        ready: '<span class="badge b-grey">Ready</span>',
+        problem: '<span class="badge b-red">Skipped</span>',
+        working: '<span class="badge b-orange">Creating…</span>',
+        created: '<span class="badge b-green">Created</span>',
+        failed: '<span class="badge b-red">Failed</span>',
+      };
+      $('bulkRows').innerHTML = bulkRows.map((r) => `<tr>
+          <td>${r.n}</td>
+          <td>${escapeHtml(r.name || '-')}</td>
+          <td>${escapeHtml(isMobile(r.phone) ? r.phone : (r.raw || '-'))}</td>
+          <td>${escapeHtml(r.showroom ? r.showroom.name : (r.srText || '-'))}</td>
+          <td class="result">${badge[r.status]} <span class="muted">${escapeHtml(r.note)}</span></td>
+        </tr>`).join('');
+      $('bulkPreview').classList.toggle('hidden', bulkRows.length === 0);
+
+      const ready = bulkRows.filter((r) => r.status === 'ready').length;
+      $('bulkCreateBtn').disabled = bulkBusy || ready === 0;
+      $('bulkCreateBtn').textContent = ready ? `Create ${ready} login${ready === 1 ? '' : 's'}` : 'Create logins';
+    }
+
+    function checkBulk() {
+      if (bulkBusy) return;
+      $('bulkDownloadBtn').classList.add('hidden');
+      const text = $('bulkInput').value;
+      const result = text.trim() ? parseBulk(text) : { rows: [] };
+      bulkRows = result.rows || [];
+      renderBulkRows();
+      if (result.error) return setMsg('bulkMsg', result.error, false);
+      if (!bulkRows.length) return setMsg('bulkMsg', '');
+      const ready = bulkRows.filter((r) => r.status === 'ready').length;
+      const skipped = bulkRows.length - ready;
+      setMsg('bulkMsg', `${ready} ready to create` +
+        (skipped ? `, ${skipped} will be skipped (see the Result column).` : '.'), ready > 0);
+    }
+
+    $('bulkInput').addEventListener('input', () => {
+      clearTimeout(bulkTimer);
+      bulkTimer = setTimeout(checkBulk, 300);
+    });
+    $('bulkShowroom').addEventListener('change', checkBulk);
+    $('bulkClearBtn').addEventListener('click', () => {
+      if (bulkBusy) return;
+      $('bulkInput').value = '';
+      checkBulk();
+    });
+
+    $('bulkCreateBtn').addEventListener('click', async () => {
+      const todo = bulkRows.filter((r) => r.status === 'ready');
+      if (!todo.length || bulkBusy) return;
+      if (!confirm(`Create ${todo.length} login${todo.length === 1 ? '' : 's'} now?\n\n` +
+                   "Each person's username and first password will be their mobile number.")) return;
+
+      bulkBusy = true;
+      $('bulkInput').disabled = true;
+      $('bulkShowroom').disabled = true;
+      $('bulkClearBtn').disabled = true;
+      let created = 0;
+      let failed = 0;
+      for (const [i, row] of todo.entries()) {
+        setMsg('bulkMsg', `Creating ${i + 1} of ${todo.length}… please keep this page open.`, true);
+        row.status = 'working';
+        renderBulkRows();
+        try {
+          await callAdminUsers({ action: 'create', full_name: row.name, phone: row.phone, showroom_id: row.showroom.id });
+          row.status = 'created';
+          row.note = '';
+          created++;
+        } catch (err) {
+          row.status = 'failed';
+          row.note = err.message || String(err);
+          failed++;
+        }
+        renderBulkRows();
+      }
+      bulkBusy = false;
+      $('bulkInput').disabled = false;
+      $('bulkShowroom').disabled = false;
+      $('bulkClearBtn').disabled = false;
+      renderBulkRows();
+      setMsg('bulkMsg', `Done: ${created} created` + (failed ? `, ${failed} failed (see the Result column).` : '.') +
+        ' Click "Download the list" to keep a copy.', failed === 0);
+      $('bulkDownloadBtn').classList.remove('hidden');
+      await renderStaff();
+    });
+
+    // The result as a file for Excel: name, username, first password, showroom, result
+    $('bulkDownloadBtn').addEventListener('click', () => {
+      const label = { ready: 'Not created', problem: 'Skipped', working: 'Not created', created: 'Created', failed: 'Failed' };
+      const rows = [['Name', 'Username', 'First password', 'Showroom', 'Result', 'Note']];
+      for (const r of bulkRows) {
+        const ok = r.status === 'created';
+        rows.push([r.name, ok ? r.phone : (r.phone || r.raw), ok ? r.phone : '',
+          r.showroom ? r.showroom.name : r.srText, label[r.status], r.note]);
+      }
+      const csv = rows
+        .map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+        .join('\r\n');
+      const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `new_logins_${todayIST()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
     });
 
     // ======================= Showrooms tab =======================
