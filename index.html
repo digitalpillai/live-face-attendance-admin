@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- index.html | Version: V6
+<!-- index.html | Version: V7
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
@@ -12,6 +12,10 @@
      V6: Master admin and HR logins (needs 10_roles_and_showrooms.sql). HR see and manage only their own
          showrooms and cannot delete. Showroom number, brand, address, contact number, email and contact
          person. HR logins tab. Master admin can delete staff and showrooms.
+     V7: Activity tab (every check-in, check-out, undo, face registration, account change and every problem the
+         phones meet: no GPS, face not matching, errors, freezes, crashes) and Support tab (reports sent with the
+         app's "Send logs" button), both with "Copy for Claude". HR see only their own showrooms.
+         An "Activity" button on each staff row. Needs 11_activity_and_support.sql.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -83,6 +87,13 @@
     button.danger { color: var(--red); border-color: var(--red); }
     .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 12px; }
     .checks label.check { margin-top: 6px; }
+    tr.lvl-error td { background: #fff5f5; }
+    tr.lvl-warning td { background: #fffaf0; }
+    td.what { white-space: normal; min-width: 280px; }
+    td.wrap { white-space: normal; min-width: 150px; }
+    pre.report { max-height: 55vh; overflow: auto; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px;
+                 font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
+    nav.tabs .badge { margin-left: 4px; }
   </style>
 </head>
 <body>
@@ -112,6 +123,8 @@
     </header>
     <nav class="tabs">
       <button type="button" data-tab="attendance" class="active">Attendance</button>
+      <button type="button" data-tab="activity">Activity</button>
+      <button type="button" data-tab="support">Support <span id="supportCount" class="badge b-red hidden"></span></button>
       <button type="button" data-tab="staff">Staff</button>
       <button type="button" data-tab="showrooms">Showrooms</button>
       <button type="button" data-tab="users" data-master-only>HR logins</button>
@@ -123,6 +136,10 @@
         <b>One step is missing in Supabase.</b> Run <b>10_roles_and_showrooms.sql</b> in Supabase (SQL Editor) to turn on
         showroom details, HR logins and delete tools. Then press Ctrl+F5 on this page.
       </div>
+    </main>
+
+    <main id="sql11Notice" class="hidden" style="padding-bottom:0">
+      <div class="card" style="border-color:var(--red)" id="sql11Text"></div>
     </main>
 
     <!-- ---------- Attendance ---------- -->
@@ -164,6 +181,78 @@
         </div>
         <p class="muted">One row per employee per day, for the showroom selected above.
           Opens in Excel or Google Sheets. Up to 3 months at a time.</p>
+      </div>
+    </main>
+
+    <!-- ---------- Activity ---------- -->
+    <main id="tab-activity" class="hidden">
+      <div class="card">
+        <div class="row">
+          <div><label for="actFrom">From</label><input id="actFrom" type="date"></div>
+          <div><label for="actTo">To</label><input id="actTo" type="date"></div>
+          <div><label for="actShowroom">Showroom</label><select id="actShowroom"></select></div>
+          <div><label for="actLevel">Show</label>
+            <select id="actLevel">
+              <option value="">Everything</option>
+              <option value="problems">Problems only (warnings and errors)</option>
+              <option value="error">Errors only</option>
+            </select></div>
+          <div><label for="actSearch">Search (name, mobile, words)</label><input id="actSearch" type="search"></div>
+          <div style="flex:0 0 auto"><button id="actLoadBtn" type="button">Show</button></div>
+        </div>
+        <div id="actMsg" class="msg"></div>
+      </div>
+
+      <div class="chips" id="actChips"></div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h2 id="actTitle" style="margin:0;flex:1 1 auto">Activity</h2>
+          <div style="flex:0 0 auto"><button id="actCopyBtn" type="button" class="secondary">Copy for Claude</button></div>
+          <div style="flex:0 0 auto"><button id="actCsvBtn" type="button" class="secondary">Download CSV</button></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Employee</th><th>Showroom</th><th>What happened</th><th></th></tr></thead>
+            <tbody id="actRows"></tbody>
+          </table>
+        </div>
+        <p id="actNote" class="muted"></p>
+        <p class="muted">Times are Indian time. Check-ins, check-outs, undo, face registration and changes made in this
+          dashboard are written automatically. Problems on the phones (no GPS, face not matching, no internet, errors,
+          freezes, crashes) come from phones with app version 1.1.0 or newer. Lines older than 60 days are removed
+          automatically. "Copy for Claude" copies the lines shown, ready to paste into Claude for a quick diagnosis.</p>
+      </div>
+    </main>
+
+    <!-- ---------- Support reports ---------- -->
+    <main id="tab-support" class="hidden">
+      <div class="card">
+        <div class="row">
+          <div><label for="supStatus">Show</label>
+            <select id="supStatus">
+              <option value="open">Open (new and seen)</option>
+              <option value="new">New only</option>
+              <option value="solved">Solved</option>
+              <option value="">All</option>
+            </select></div>
+          <div><label for="supShowroom">Showroom</label><select id="supShowroom"></select></div>
+          <div style="flex:0 0 auto"><button id="supLoadBtn" type="button">Show</button></div>
+        </div>
+        <div id="supMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>Support reports from phones</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ref</th><th>Sent</th><th>Employee</th><th>Showroom</th><th>Note from the person</th>
+              <th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="supRows"></tbody>
+          </table>
+        </div>
+        <p class="muted">Staff send these with the "Send logs" button in the app (Help page, or under an error message).
+          Each one has the phone's details and the app's diary. Click "Open" to read it, or "Copy for Claude" and paste it
+          into Claude for a quick diagnosis. Reports older than 180 days are removed automatically.</p>
       </div>
     </main>
 
@@ -379,6 +468,33 @@
     <div id="pwMsg" class="msg"></div>
   </dialog>
 
+  <!-- ---------- One activity line pop-up ---------- -->
+  <dialog id="actDialog" style="width:min(680px,96vw)">
+    <h2>Activity line</h2>
+    <pre id="actText" class="report"></pre>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><button id="actLineCopyBtn" type="button">Copy for Claude</button></div>
+      <div style="flex:0 0 auto"><button id="actCloseBtn" type="button" class="secondary">Close</button></div>
+    </div>
+    <div id="actLineMsg" class="msg"></div>
+  </dialog>
+
+  <!-- ---------- Support report pop-up ---------- -->
+  <dialog id="repDialog" style="width:min(980px,96vw)">
+    <h2 id="repTitle">Support report</h2>
+    <p id="repMeta" class="muted"></p>
+    <pre id="repText" class="report"></pre>
+    <label for="repStatusNote">What was done (optional, saved with "Mark solved")</label>
+    <input id="repStatusNote" type="text" placeholder="e.g. Asked him to switch on precise location">
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><button id="repCopyBtn" type="button">Copy for Claude</button></div>
+      <div style="flex:0 0 auto"><button id="repDownloadBtn" type="button" class="secondary">Download .txt</button></div>
+      <div style="flex:0 0 auto"><button id="repSolvedBtn" type="button" class="secondary">Mark solved</button></div>
+      <div style="flex:0 0 auto"><button id="repCloseBtn" type="button" class="secondary">Close</button></div>
+    </div>
+    <div id="repMsg" class="msg"></div>
+  </dialog>
+
   <script>
     // ---- Your two Supabase values (keep the quote marks) ----
     const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
@@ -389,7 +505,7 @@
 
     const $ = (id) => document.getElementById(id);
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const TABS = ['attendance', 'staff', 'showrooms', 'users', 'settings'];
+    const TABS = ['attendance', 'activity', 'support', 'staff', 'showrooms', 'users', 'settings'];
     let currentTab = 'attendance';
     let showrooms = [];
     let employees = [];
@@ -517,6 +633,14 @@
       const currentFilter = filter.value;
       filter.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
       filter.value = currentFilter;
+
+      // Showroom filters on the Activity and Support tabs
+      for (const id of ['actShowroom', 'supShowroom']) {
+        const sel = $(id);
+        const current = sel.value;
+        sel.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
+        sel.value = current;
+      }
 
       // Showroom choice in "Add an employee"
       const newSr = $('newShowroom');
@@ -716,6 +840,7 @@
           <td>${emp.is_active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-grey">Inactive</span>'}</td>
           <td class="actions">
             <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>
+            <button type="button" class="secondary" data-act="activity" data-id="${emp.id}">Activity</button>
             <button type="button" class="secondary" data-act="face" data-id="${emp.id}">Reset face</button>
             <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>
             ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}
@@ -770,6 +895,10 @@
       }
       if (btn.dataset.act === 'password') {
         openPasswordDialog(emp);
+        return;
+      }
+      if (btn.dataset.act === 'activity') {
+        openActivityFor(emp);
         return;
       }
       btn.disabled = true;
@@ -1640,6 +1769,427 @@
       }
     });
 
+    // ======================= Activity and Support (11_activity_and_support.sql) =======================
+    let needsSql11 = false; // true until 11_activity_and_support.sql has been run
+    const missingTable = (err) => ['42P01', 'PGRST205', 'PGRST202'].includes(err?.code);
+    const CLAUDE_INTRO = 'I run the "Live Face Attendance" app for staff attendance at our car showrooms ' +
+      '(Flutter Android app + Supabase; staff check in and out with a GPS geofence and a live face check).';
+    const LEVEL_BADGE = {
+      error: '<span class="badge b-red">Error</span> ',
+      warning: '<span class="badge b-orange">Warning</span> ',
+    };
+    const STATUS_BADGE = {
+      new: '<span class="badge b-red">New</span>',
+      seen: '<span class="badge b-orange">Seen</span>',
+      solved: '<span class="badge b-green">Solved</span>',
+    };
+    const fullTimeIST = (iso) => new Date(iso).toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit'
+    });
+    const shortTimeIST = (iso) => new Date(iso).toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+    });
+
+    function showSql11Notice() {
+      $('sql11Text').innerHTML = isMaster()
+        ? '<b>One step is missing in Supabase.</b> Run <b>11_activity_and_support.sql</b> in Supabase (SQL Editor) to switch on ' +
+          'the activity log and support reports. Then press Ctrl+F5 on this page.'
+        : '<b>The activity log is not switched on yet.</b> Please ask the master admin to finish the Day 18 setup.';
+      $('sql11Notice').classList.toggle('hidden', !needsSql11);
+    }
+
+    // The employee of a line: name, mobile and code (from the staff list this login can see)
+    function personOf(row) {
+      const emp = employees.find((e) => e.id === row.employee_id);
+      if (emp) return { name: emp.full_name, phone: emp.phone || '', code: emp.employee_code || '' };
+      return { name: row.employee_id ? 'Employee #' + row.employee_id : '-', phone: '', code: '' };
+    }
+    const personText = (p) => p.name + (p.phone ? ` (${p.phone})` : '');
+    const appAndPhone = (r) => [r.app_version && 'App ' + r.app_version, r.device].filter(Boolean).join(' · ');
+
+    // Copies text; works on older browsers too
+    async function copyText(text, msgId) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {
+        const area = document.createElement('textarea');
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      if (msgId) setMsg(msgId, 'Copied. Paste it into Claude (or WhatsApp / email).', true);
+    }
+
+    function downloadText(text, fileName, type) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    // ---------- Activity tab ----------
+    const MAX_ACTIVITY = 5000;   // lines loaded at most (newest first)
+    const SHOW_ACTIVITY = 1500;  // lines drawn in the table at most (CSV has all)
+    let activityRows = [];
+
+    async function loadActivity() {
+      const from = $('actFrom').value;
+      const to = $('actTo').value;
+      const start = dayStart(from).toISOString();
+      const end = new Date(dayStart(to).getTime() + DAY_MS).toISOString();
+      const sid = $('actShowroom').value;
+      const level = $('actLevel').value;
+      const rows = [];
+      for (let page = 0; rows.length < MAX_ACTIVITY; page++) {
+        let q = db.from('app_events')
+          .select('id, happened_at, received_at, level, kind, message, details, app_version, device, employee_id, showroom_id')
+          .gte('happened_at', start)
+          .lt('happened_at', end)
+          .order('happened_at', { ascending: false })
+          .order('id', { ascending: false });
+        if (sid) q = q.eq('showroom_id', Number(sid));
+        if (level === 'problems') q = q.in('level', ['warning', 'error']);
+        if (level === 'error') q = q.eq('level', 'error');
+        const { data, error } = await q.range(page * 1000, page * 1000 + 999);
+        if (error) throw error;
+        rows.push(...data);
+        if (data.length < 1000) break;
+      }
+      return rows.slice(0, MAX_ACTIVITY);
+    }
+
+    async function renderActivity() {
+      const from = $('actFrom').value;
+      const to = $('actTo').value;
+      if (!from || !to || from > to) return setMsg('actMsg', 'Please choose a valid From and To date.', false);
+      if (Math.round((dayStart(to) - dayStart(from)) / DAY_MS) + 1 > 31) {
+        return setMsg('actMsg', 'Please choose at most 31 days at a time.', false);
+      }
+      $('actLoadBtn').disabled = true;
+      setMsg('actMsg', 'Loading…', true);
+      let problem = '';
+      try {
+        await loadBase();
+        activityRows = await loadActivity();
+        needsSql11 = false;
+      } catch (err) {
+        activityRows = [];
+        if (missingTable(err)) needsSql11 = true;
+        else problem = 'Could not load the activity: ' + (err.message || err);
+      } finally {
+        $('actLoadBtn').disabled = false;
+      }
+      showSql11Notice();
+      drawActivity();
+      setMsg('actMsg', problem, false);
+    }
+
+    // The loaded lines that match the search box
+    function filteredActivity() {
+      const words = $('actSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!words.length) return activityRows;
+      return activityRows.filter((r) => {
+        const p = personOf(r);
+        const text = [p.name, p.phone, p.code, showroomName(r.showroom_id), r.message, r.kind, r.device, r.app_version]
+          .join(' ').toLowerCase();
+        return words.every((w) => text.includes(w));
+      });
+    }
+
+    function drawActivity() {
+      const shown = filteredActivity();
+      const count = (test) => shown.filter(test).length;
+      $('actChips').innerHTML = [
+        ['Lines', shown.length],
+        ['Errors', count((r) => r.level === 'error')],
+        ['Warnings', count((r) => r.level === 'warning')],
+        ['Check-ins', count((r) => r.kind === 'check_in')],
+        ['Check-outs', count((r) => r.kind === 'check_out')],
+        ['People with problems', new Set(shown.filter((r) => r.level !== 'info' && r.employee_id).map((r) => r.employee_id)).size],
+      ].map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
+
+      $('actRows').innerHTML = shown.slice(0, SHOW_ACTIVITY).map((r) => {
+        const p = personOf(r);
+        const extra = appAndPhone(r);
+        return `<tr class="lvl-${escapeHtml(r.level)}">
+          <td>${shortTimeIST(r.happened_at)}</td>
+          <td><b>${escapeHtml(p.name)}</b>${p.phone ? '<br><span class="muted">' + escapeHtml(p.phone) + '</span>' : ''}</td>
+          <td>${escapeHtml(showroomName(r.showroom_id))}</td>
+          <td class="what">${LEVEL_BADGE[r.level] || ''}${escapeHtml(r.message)}${extra ? '<br><span class="muted">' + escapeHtml(extra) + '</span>' : ''}</td>
+          <td class="actions"><button type="button" class="secondary" data-act="line" data-id="${r.id}">Details</button></td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="5" class="muted">${needsSql11 ? 'The activity log is not switched on yet.' : 'Nothing found for these dates.'}</td></tr>`;
+
+      const from = $('actFrom').value;
+      const to = $('actTo').value;
+      $('actTitle').textContent = 'Activity - ' + (from === to ? dateIST(dayStart(from))
+        : dateIST(dayStart(from)) + ' to ' + dateIST(dayStart(to)));
+      $('actNote').textContent =
+        (activityRows.length >= MAX_ACTIVITY ? `Only the newest ${MAX_ACTIVITY} lines were loaded: choose fewer days or one showroom. ` : '') +
+        (shown.length > SHOW_ACTIVITY ? `The table shows the newest ${SHOW_ACTIVITY}; Download CSV has all ${shown.length}.` : '');
+    }
+
+    // One line in words (for the Details pop-up and Claude)
+    function activityLineText(r) {
+      const p = personOf(r);
+      const late = Math.abs(new Date(r.received_at) - new Date(r.happened_at)) > 5 * 60000;
+      return [
+        `Time (India): ${fullTimeIST(r.happened_at)}` + (late ? ` (reached Supabase ${fullTimeIST(r.received_at)})` : ''),
+        `Employee: ${personText(p)}${p.code ? ' · code ' + p.code : ''}`,
+        `Showroom: ${showroomName(r.showroom_id)}`,
+        `Level: ${String(r.level).toUpperCase()}`,
+        `What happened: ${r.message}`,
+        `Code: ${r.kind}`,
+        r.app_version ? `App version: ${r.app_version}` : null,
+        r.device ? `Phone: ${r.device}` : null,
+        r.details ? 'Details:\n' + JSON.stringify(r.details, null, 2) : null,
+      ].filter(Boolean).join('\n');
+    }
+
+    let openLine = null;
+    $('actRows').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act="line"]');
+      if (!btn) return;
+      openLine = activityRows.find((r) => String(r.id) === btn.dataset.id);
+      if (!openLine) return;
+      $('actText').textContent = activityLineText(openLine);
+      setMsg('actLineMsg', '');
+      $('actDialog').showModal();
+    });
+    $('actLineCopyBtn').addEventListener('click', () => {
+      if (!openLine) return;
+      copyText(CLAUDE_INTRO + '\nThis is one line from the app\'s activity log. Please explain in simple words what it means, ' +
+        'the most likely cause, and what to do.\n\n' + activityLineText(openLine), 'actLineMsg');
+    });
+    $('actCloseBtn').addEventListener('click', () => $('actDialog').close());
+
+    $('actCopyBtn').addEventListener('click', () => {
+      const shown = filteredActivity();
+      if (!shown.length) return setMsg('actMsg', 'Nothing to copy.', false);
+      const max = 400;
+      const lines = shown.slice(0, max).map((r) => [
+        shortTimeIST(r.happened_at), personText(personOf(r)), showroomName(r.showroom_id), String(r.level).toUpperCase(),
+        r.message, r.kind, r.details ? JSON.stringify(r.details) : '', r.app_version || '', r.device || '',
+      ].join(' | '));
+      const search = $('actSearch').value.trim();
+      const text = CLAUDE_INTRO + '\nBelow is the activity log from the admin dashboard. Please read it and tell me, in simple ' +
+        'words, which problems you see, the most likely cause of each, and what the staff, HR or the admin should do.\n\n' +
+        `Showroom: ${$('actShowroom').selectedOptions[0]?.textContent || 'All'} · ${$('actFrom').value} to ${$('actTo').value} · ` +
+        `${$('actLevel').selectedOptions[0]?.textContent || 'Everything'}${search ? ' · search: ' + search : ''} · ` +
+        `${shown.length} lines, newest first${shown.length > max ? ` (only the newest ${max} are copied)` : ''}\n` +
+        'Time (India) | Employee | Showroom | Level | What happened | Code | Details | App version | Phone\n' +
+        lines.join('\n');
+      copyText(text, 'actMsg');
+    });
+
+    const csvCell = (v) => {
+      const s = String(v ?? '');
+      const safe = /^[=+\-@]/.test(s) ? "'" + s : s; // stops Excel from treating text as a formula
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+
+    $('actCsvBtn').addEventListener('click', () => {
+      const shown = filteredActivity();
+      if (!shown.length) return setMsg('actMsg', 'Nothing to download.', false);
+      const rows = [['Time (India)', 'Employee code', 'Employee', 'Mobile', 'Showroom', 'Level', 'What happened', 'Code',
+        'Details', 'App version', 'Phone']];
+      for (const r of shown) {
+        const p = personOf(r);
+        rows.push([fullTimeIST(r.happened_at), p.code, p.name, p.phone, showroomName(r.showroom_id), r.level, r.message,
+          r.kind, r.details ? JSON.stringify(r.details) : '', r.app_version || '', r.device || '']);
+      }
+      const csv = rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
+      downloadText('﻿' + csv, `activity_${$('actFrom').value}_to_${$('actTo').value}.csv`, 'text/csv;charset=utf-8');
+    });
+
+    $('actLoadBtn').addEventListener('click', renderActivity);
+    for (const id of ['actFrom', 'actTo', 'actShowroom', 'actLevel']) $(id).addEventListener('change', renderActivity);
+    $('actSearch').addEventListener('input', drawActivity);
+
+    // From the Staff tab: the last 7 days of one employee
+    function openActivityFor(emp) {
+      const today = todayIST();
+      $('actFrom').value = ymd(new Date(dayStart(today).getTime() - 6 * DAY_MS));
+      $('actTo').value = today;
+      $('actShowroom').value = '';
+      $('actLevel').value = '';
+      $('actSearch').value = emp.phone;
+      showTab('activity');
+    }
+
+    // ---------- Support tab ----------
+    let supportRows = [];
+    let openReport = null; // { row, full } of the report in the pop-up
+
+    async function renderSupport() {
+      $('supLoadBtn').disabled = true;
+      setMsg('supMsg', 'Loading…', true);
+      let problem = '';
+      try {
+        await loadBase();
+        let q = db.from('support_reports')
+          .select('id, created_at, note, status, status_note, updated_at, app_version, device, employee_id, showroom_id')
+          .order('created_at', { ascending: false })
+          .limit(300);
+        const status = $('supStatus').value;
+        if (status === 'open') q = q.in('status', ['new', 'seen']);
+        else if (status) q = q.eq('status', status);
+        if ($('supShowroom').value) q = q.eq('showroom_id', Number($('supShowroom').value));
+        const { data, error } = await q;
+        if (error) throw error;
+        supportRows = data;
+        needsSql11 = false;
+      } catch (err) {
+        supportRows = [];
+        if (missingTable(err)) needsSql11 = true;
+        else problem = 'Could not load the support reports: ' + (err.message || err);
+      } finally {
+        $('supLoadBtn').disabled = false;
+      }
+      showSql11Notice();
+      drawSupport();
+      setMsg('supMsg', problem, false);
+      updateSupportBadge();
+    }
+
+    function drawSupport() {
+      $('supRows').innerHTML = supportRows.map((r) => {
+        const p = personOf(r);
+        const extra = appAndPhone(r);
+        return `<tr>
+          <td><b>#${r.id}</b></td>
+          <td>${shortTimeIST(r.created_at)}</td>
+          <td class="wrap"><b>${escapeHtml(p.name)}</b>${p.phone ? '<br><span class="muted">' + escapeHtml(p.phone) + '</span>' : ''}
+            ${extra ? '<br><span class="muted">' + escapeHtml(extra) + '</span>' : ''}</td>
+          <td>${escapeHtml(showroomName(r.showroom_id))}</td>
+          <td class="what">${r.note ? escapeHtml(r.note) : '<span class="muted">No note</span>'}${
+            r.status_note ? '<br><span class="muted">Done: ' + escapeHtml(r.status_note) + '</span>' : ''}</td>
+          <td>${STATUS_BADGE[r.status] || escapeHtml(r.status)}</td>
+          <td class="actions wrap">
+            <button type="button" data-act="open" data-id="${r.id}">Open</button>
+            <button type="button" class="secondary" data-act="copy" data-id="${r.id}">Copy for Claude</button>
+            ${r.status === 'solved'
+              ? `<button type="button" class="secondary" data-act="reopen" data-id="${r.id}">Reopen</button>`
+              : `<button type="button" class="secondary" data-act="solved" data-id="${r.id}">Mark solved</button>`}
+          </td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="7" class="muted">${needsSql11 ? 'Support reports are not switched on yet.' : 'No reports here.'}</td></tr>`;
+    }
+
+    // Number of new reports, shown on the Support tab
+    async function updateSupportBadge() {
+      const badge = $('supportCount');
+      try {
+        const { count, error } = await db.from('support_reports')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'new');
+        if (error || !count) throw error || new Error('none');
+        badge.textContent = count;
+        badge.classList.remove('hidden');
+      } catch (_) {
+        badge.classList.add('hidden');
+      }
+    }
+
+    // The full text of one report: the summary and the phone's diary
+    async function loadReport(id) {
+      const { data, error } = await db.from('support_reports').select('summary, log_text').eq('id', id).single();
+      if (error) throw error;
+      return data;
+    }
+
+    function reportForClaude(r, full) {
+      const p = personOf(r);
+      return CLAUDE_INTRO + '\nA staff member sent this support report from their phone with the app\'s "Send logs" ' +
+        'button. Please read it and tell me, in simple words:\n1. what went wrong,\n2. the most likely cause,\n' +
+        '3. what the staff member, HR or the admin should do to fix it.\n\n' +
+        `Report #${r.id} · sent ${fullTimeIST(r.created_at)} (India time) · ${personText(p)} · ` +
+        `${showroomName(r.showroom_id)} · status: ${r.status}\n\n` +
+        (full.summary || '(no summary)') + '\n\n' + (full.log_text || '(no log)');
+    }
+
+    async function setReportStatus(row, status, note) {
+      await rpc('update_support_report', { p_report_id: row.id, p_status: status, p_status_note: note || null });
+    }
+
+    async function openReportDialog(r) {
+      const full = await loadReport(r.id);
+      openReport = { row: r, full };
+      const p = personOf(r);
+      $('repTitle').textContent = `Support report #${r.id}`;
+      $('repMeta').textContent = `${personText(p)} · ${showroomName(r.showroom_id)} · sent ${fullTimeIST(r.created_at)}` +
+        (r.note ? ` · note: "${r.note}"` : '');
+      $('repText').textContent = (full.summary || '(no summary)') + '\n\n' + (full.log_text || '(no log)');
+      $('repStatusNote').value = r.status_note || '';
+      $('repSolvedBtn').textContent = r.status === 'solved' ? 'Save note' : 'Mark solved';
+      setMsg('repMsg', '');
+      $('repDialog').showModal();
+      $('repText').scrollTop = $('repText').scrollHeight; // newest lines are at the bottom
+      if (r.status === 'new') {
+        try {
+          await setReportStatus(r, 'seen');
+          r.status = 'seen';
+          drawSupport();
+          updateSupportBadge();
+        } catch (_) { /* stays "new" */ }
+      }
+    }
+
+    $('supRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const r = supportRows.find((x) => String(x.id) === btn.dataset.id);
+      if (!r) return;
+      setMsg('supMsg', '');
+      btn.disabled = true;
+      try {
+        if (btn.dataset.act === 'open') await openReportDialog(r);
+        if (btn.dataset.act === 'copy') await copyText(reportForClaude(r, await loadReport(r.id)), 'supMsg');
+        if (btn.dataset.act === 'solved' || btn.dataset.act === 'reopen') {
+          const solved = btn.dataset.act === 'solved';
+          await setReportStatus(r, solved ? 'solved' : 'seen');
+          await renderSupport();
+          setMsg('supMsg', `Report #${r.id} ${solved ? 'marked solved' : 'is open again'}.`, true);
+        }
+      } catch (err) {
+        setMsg('supMsg', err.message || String(err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $('repCopyBtn').addEventListener('click', () => {
+      if (openReport) copyText(reportForClaude(openReport.row, openReport.full), 'repMsg');
+    });
+    $('repDownloadBtn').addEventListener('click', () => {
+      if (openReport) downloadText(reportForClaude(openReport.row, openReport.full),
+        `support_report_${openReport.row.id}.txt`, 'text/plain;charset=utf-8');
+    });
+    $('repSolvedBtn').addEventListener('click', async () => {
+      if (!openReport) return;
+      const row = openReport.row;
+      $('repSolvedBtn').disabled = true;
+      try {
+        await setReportStatus(row, 'solved', $('repStatusNote').value.trim());
+        $('repDialog').close();
+        await renderSupport();
+        setMsg('supMsg', `Report #${row.id} marked solved.`, true);
+      } catch (err) {
+        setMsg('repMsg', err.message || String(err), false);
+      } finally {
+        $('repSolvedBtn').disabled = false;
+      }
+    });
+    $('repCloseBtn').addEventListener('click', () => $('repDialog').close());
+    $('supLoadBtn').addEventListener('click', renderSupport);
+    for (const id of ['supStatus', 'supShowroom']) $(id).addEventListener('change', renderSupport);
+
     // ======================= Tabs =======================
     function showTab(tab) {
       if (!isMaster() && (tab === 'users' || tab === 'settings')) tab = 'attendance';
@@ -1648,6 +2198,8 @@
       document.querySelectorAll('nav.tabs button').forEach((b) =>
         b.classList.toggle('active', b.dataset.tab === tab));
       if (tab === 'attendance') refresh();
+      if (tab === 'activity') renderActivity();
+      if (tab === 'support') renderSupport();
       if (tab === 'staff') renderStaff();
       if (tab === 'showrooms') renderShowrooms();
       if (tab === 'users') renderUsers();
@@ -1710,11 +2262,15 @@
       if (!$('date').value) $('date').value = today;
       if (!$('fromDate').value) $('fromDate').value = today.slice(0, 8) + '01'; // 1st of this month
       if (!$('toDate').value) $('toDate').value = today;
+      if (!$('actFrom').value) $('actFrom').value = today;
+      if (!$('actTo').value) $('actTo').value = today;
 
       showTab('attendance');
+      updateSupportBadge();
       clearInterval(refreshTimer);
       refreshTimer = setInterval(() => {
         if (currentTab === 'attendance' && $('date').value === todayIST()) refresh();
+        updateSupportBadge();
       }, 60000);
     }
 
