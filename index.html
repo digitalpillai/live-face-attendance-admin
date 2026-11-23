@@ -1,10 +1,17 @@
 <!doctype html>
-<!-- index.html | Version: V4
+<!-- index.html | Version: V6
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
      V4: "Add many employees": paste rows copied from Excel to create many logins at once
          (username and first password = mobile number), then download the list.
+     V5: Employee code, Designation and Email for each employee (needs 09_employee_details.sql);
+         "Add many employees" reads the staff Excel template directly (S.NO, Employee Code, Employee Name,
+         Designation, Mobile Number, Email ID); rows without a 10-digit mobile number are skipped;
+         every upload is kept in the Upload log; staff search box.
+     V6: Master admin and HR logins (needs 10_roles_and_showrooms.sql). HR see and manage only their own
+         showrooms and cannot delete. Showroom number, brand, address, contact number, email and contact
+         person. HR logins tab. Master admin can delete staff and showrooms.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -73,6 +80,9 @@
     textarea { width: 100%; min-height: 150px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
                font: inherit; font-size: 13px; resize: vertical; tab-size: 12; }
     td.result { white-space: normal; min-width: 220px; }
+    button.danger { color: var(--red); border-color: var(--red); }
+    .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 12px; }
+    .checks label.check { margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -104,8 +114,16 @@
       <button type="button" data-tab="attendance" class="active">Attendance</button>
       <button type="button" data-tab="staff">Staff</button>
       <button type="button" data-tab="showrooms">Showrooms</button>
-      <button type="button" data-tab="settings">Settings</button>
+      <button type="button" data-tab="users" data-master-only>HR logins</button>
+      <button type="button" data-tab="settings" data-master-only>Settings</button>
     </nav>
+
+    <main id="setupNotice" class="hidden" style="padding-bottom:0">
+      <div class="card" style="border-color:var(--red)">
+        <b>One step is missing in Supabase.</b> Run <b>10_roles_and_showrooms.sql</b> in Supabase (SQL Editor) to turn on
+        showroom details, HR logins and delete tools. Then press Ctrl+F5 on this page.
+      </div>
+    </main>
 
     <!-- ---------- Attendance ---------- -->
     <main id="tab-attendance">
@@ -151,45 +169,75 @@
 
     <!-- ---------- Staff ---------- -->
     <main id="tab-staff" class="hidden">
+      <div id="sqlNotice" class="card hidden" style="border-color:var(--red)">
+        <b>One step is missing in Supabase.</b> Run <b>09_employee_details.sql</b> in Supabase (SQL Editor) to save
+        employee code, designation and email, and to keep the upload log. Then press Ctrl+F5 on this page.
+      </div>
       <div class="card">
         <h2>Add an employee</h2>
         <div class="row">
-          <div><label for="newName">Name</label><input id="newName" type="text"></div>
-          <div><label for="newPhone">Mobile number</label><input id="newPhone" type="tel" maxlength="10" inputmode="numeric"></div>
-          <div><label for="newShowroom">Showroom</label><select id="newShowroom"></select></div>
+          <div><label for="newName">Employee name *</label><input id="newName" type="text"></div>
+          <div><label for="newPhone">Mobile number *</label><input id="newPhone" type="tel" maxlength="10" inputmode="numeric"></div>
+          <div><label for="newDesignation">Designation *</label><input id="newDesignation" type="text"></div>
+          <div><label for="newShowroom">Showroom *</label><select id="newShowroom"></select></div>
+        </div>
+        <div class="row">
+          <div><label for="newCode">Employee code</label><input id="newCode" type="text"></div>
+          <div><label for="newEmail">Email ID</label><input id="newEmail" type="email"></div>
           <div style="flex:0 0 auto"><button id="addEmpBtn" type="button">Add employee</button></div>
         </div>
-        <p class="muted">They log in to the app with their mobile number. Their first password is also their mobile number.</p>
+        <p class="muted">* required. They log in to the app with their mobile number. Their first password is also their mobile number.</p>
         <div id="staffMsg" class="msg"></div>
       </div>
       <div class="card">
-        <h2>Add many employees (from Excel)</h2>
-        <p class="muted">In Excel, select the rows, including the heading row, and press Ctrl+C. Click in the box below
-          and press Ctrl+V. The sheet needs a name column and a mobile number column; a showroom (or branch) column is
-          optional. Other columns are ignored.</p>
-        <textarea id="bulkInput" spellcheck="false"
-          placeholder="Paste here from Excel, for example:&#10;Name&#9;Mobile&#9;Showroom&#10;Ravi Kumar&#9;9876543210&#9;Main Showroom"></textarea>
-        <div class="row" style="margin-top:8px">
-          <div><label for="bulkShowroom">Showroom for rows that don't name one</label><select id="bulkShowroom"></select></div>
+        <h2>Add many employees (Excel upload)</h2>
+        <p class="muted">Use the staff Excel template with these headings: <b>S.NO</b>, Employee Code, <b>Employee Name</b>,
+          <b>Designation</b>, <b>Mobile Number</b>, Email ID (bold = required). Rows without a 10-digit mobile number,
+          or with a required detail missing, are skipped and written to the upload log.</p>
+        <div class="row">
+          <div><label for="bulkFile">Excel file (.xlsx, .xls or .csv)</label><input id="bulkFile" type="file" accept=".xlsx,.xls,.csv"></div>
+          <div id="bulkSheetBox" class="hidden"><label for="bulkSheet">Sheet</label><select id="bulkSheet"></select></div>
+          <div><label for="bulkShowroom">Showroom for these employees</label><select id="bulkShowroom"></select></div>
+        </div>
+        <details style="margin-top:12px">
+          <summary class="muted">Or paste rows copied from Excel instead (include the heading row)</summary>
+          <textarea id="bulkInput" spellcheck="false"
+            placeholder="Paste here from Excel, for example:&#10;S.NO&#9;Employee Code&#9;Employee Name&#9;Designation&#9;Mobile Number&#9;Email ID&#10;1&#9;6112&#9;Ravi Kumar&#9;Sales Manager&#9;9876543210&#9;"></textarea>
+        </details>
+        <div class="row" style="margin-top:12px">
           <div style="flex:0 0 auto"><button id="bulkCreateBtn" type="button" disabled>Create logins</button></div>
-          <div style="flex:0 0 auto"><button id="bulkDownloadBtn" type="button" class="secondary hidden">Download the list</button></div>
+          <div style="flex:0 0 auto"><button id="bulkDownloadBtn" type="button" class="secondary hidden">Download log</button></div>
           <div style="flex:0 0 auto"><button id="bulkClearBtn" type="button" class="secondary">Clear</button></div>
         </div>
         <div id="bulkMsg" class="msg"></div>
         <div id="bulkPreview" class="table-wrap hidden">
           <table>
-            <thead><tr><th>Row</th><th>Name</th><th>Username (mobile)</th><th>Showroom</th><th>Result</th></tr></thead>
+            <thead><tr><th>S.NO</th><th>Code</th><th>Employee name</th><th>Designation</th><th>Username (mobile)</th><th>Showroom</th><th>Result</th></tr></thead>
             <tbody id="bulkRows"></tbody>
           </table>
         </div>
-        <p class="muted">Each person's username and first password are their mobile number. People already in the staff
-          list are skipped, so if some rows fail you can simply paste the whole list again.</p>
+        <p class="muted">Each person's username and first password are their mobile number. People who already have a login
+          are skipped, so if some rows fail you can simply upload the same file again.</p>
+      </div>
+      <div class="card">
+        <h2>Upload log</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Uploaded</th><th>File</th><th>Showroom</th><th>Created</th><th>Skipped</th><th>Failed</th><th></th></tr></thead>
+            <tbody id="importRows"></tbody>
+          </table>
+        </div>
+        <div id="importMsg" class="msg"></div>
       </div>
       <div class="card">
         <h2>All staff</h2>
+        <div class="row" style="margin-bottom:8px">
+          <div><input id="staffSearch" type="search" placeholder="Search by name, mobile, employee code, designation or showroom"></div>
+          <div style="flex:0 0 auto" class="muted" id="staffCount"></div>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Employee</th><th>Showroom</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Employee</th><th>Designation</th><th>Showroom</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="staffRows"></tbody>
           </table>
         </div>
@@ -199,31 +247,85 @@
 
     <!-- ---------- Showrooms ---------- -->
     <main id="tab-showrooms" class="hidden">
-      <div class="card">
+      <div class="card" data-master-only>
         <h2 id="showroomFormTitle">Add a showroom</h2>
         <input id="srId" type="hidden">
         <div class="row">
-          <div><label for="srName">Showroom name</label><input id="srName" type="text"></div>
-          <div><label for="srLat">Latitude</label><input id="srLat" type="number" step="any"></div>
-          <div><label for="srLng">Longitude</label><input id="srLng" type="number" step="any"></div>
-          <div><label for="srRadius">Radius (metres)</label><input id="srRadius" type="number" value="100" min="20" max="2000"></div>
+          <div style="flex:0 1 120px"><label for="srNo">Showroom No. *</label><input id="srNo" type="number" min="1" step="1"></div>
+          <div><label for="srName">Showroom name *</label><input id="srName" type="text"></div>
+          <div><label for="srBrand">Brand / type</label><input id="srBrand" type="text" list="brandList" placeholder="Nexa, Arena, Ather, Vespa, Service…"></div>
+        </div>
+        <datalist id="brandList">
+          <option value="Nexa"></option><option value="Arena"></option><option value="Ather"></option>
+          <option value="Vespa"></option><option value="Service centre"></option><option value="Office"></option>
+        </datalist>
+        <div class="row">
+          <div style="flex:2 1 320px"><label for="srAddress">Address *</label><input id="srAddress" type="text"></div>
+          <div><label for="srCity">City</label><input id="srCity" type="text"></div>
+          <div style="flex:0 1 130px"><label for="srPincode">Pincode</label><input id="srPincode" type="text" maxlength="6" inputmode="numeric"></div>
+        </div>
+        <div class="row">
+          <div><label for="srPhone">Contact number *</label><input id="srPhone" type="tel"></div>
+          <div><label for="srEmail">Email ID</label><input id="srEmail" type="email"></div>
+          <div><label for="srPerson">Contact person</label><input id="srPerson" type="text"></div>
+        </div>
+        <div class="row">
+          <div><label for="srLat">Latitude *</label><input id="srLat" type="number" step="any"></div>
+          <div><label for="srLng">Longitude *</label><input id="srLng" type="number" step="any"></div>
+          <div><label for="srRadius">Allowed distance (metres) *</label><input id="srRadius" type="number" value="100" min="20" max="2000"></div>
         </div>
         <div class="row" style="margin-top:12px">
           <div style="flex:0 0 auto"><button id="saveSrBtn" type="button">Save showroom</button></div>
           <div style="flex:0 0 auto"><button id="cancelSrBtn" type="button" class="secondary hidden">Cancel editing</button></div>
         </div>
-        <p class="muted">To get the latitude and longitude: in Google Maps, right-click the showroom building
-          (on a phone, press and hold), then copy the two numbers shown. 100 metres is a good radius to start with.</p>
+        <p class="muted">* required. To get the latitude and longitude: in Google Maps, right-click the showroom building
+          (on a phone, press and hold), then copy the two numbers shown. 100 metres is a good distance to start with.</p>
         <div id="srMsg" class="msg"></div>
       </div>
       <div class="card">
-        <h2>All showrooms</h2>
+        <h2 id="srListTitle">All showrooms</h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Showroom</th><th>Latitude</th><th>Longitude</th><th>Radius</th><th>Active staff</th><th></th></tr></thead>
+            <thead><tr><th>No.</th><th>Showroom</th><th>Address</th><th>Contact</th><th>Location</th><th>Active staff</th><th></th></tr></thead>
             <tbody id="srRows"></tbody>
           </table>
         </div>
+        <div id="srListMsg" class="msg"></div>
+      </div>
+    </main>
+
+    <!-- ---------- HR logins (master admin only) ---------- -->
+    <main id="tab-users" class="hidden">
+      <div class="card">
+        <h2 id="hrFormTitle">Add an HR login</h2>
+        <input id="hrUserId" type="hidden">
+        <div class="row">
+          <div><label for="hrName">Name *</label><input id="hrName" type="text"></div>
+          <div><label for="hrLogin">Login (email) *</label><input id="hrLogin" type="email" placeholder="hr.omr@pillaimotors.in"></div>
+          <div><label for="hrMobile">Mobile number</label><input id="hrMobile" type="tel" maxlength="10" inputmode="numeric"></div>
+          <div><label for="hrPassword" id="hrPasswordLabel">Password * (8 or more characters)</label>
+            <input id="hrPassword" type="text" autocomplete="off" spellcheck="false"></div>
+        </div>
+        <label>Showrooms this login looks after *</label>
+        <div id="hrShowroomChecks" class="checks"></div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:0 0 auto"><button id="saveHrBtn" type="button">Add HR login</button></div>
+          <div style="flex:0 0 auto"><button id="cancelHrBtn" type="button" class="secondary hidden">Cancel editing</button></div>
+        </div>
+        <p class="muted">HR logins use this dashboard, not the phone app. For the showrooms ticked here they can add and edit
+          staff, make staff inactive, reset faces and passwords, upload staff from Excel, and see attendance and reports.
+          They cannot delete anything or see other showrooms. The login does not need to be a real mailbox.</p>
+        <div id="hrMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>HR logins</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Login</th><th>Mobile</th><th>Showrooms</th><th>Actions</th></tr></thead>
+            <tbody id="hrRows"></tbody>
+          </table>
+        </div>
+        <div id="hrListMsg" class="msg"></div>
       </div>
     </main>
 
@@ -245,8 +347,13 @@
   <dialog id="empDialog">
     <h2>Edit employee</h2>
     <input id="editId" type="hidden">
-    <label for="editName">Name</label><input id="editName" type="text">
-    <label for="editShowroom">Showroom</label><select id="editShowroom"></select>
+    <label for="editName">Employee name *</label><input id="editName" type="text">
+    <div id="editExtra">
+      <label for="editDesignation">Designation *</label><input id="editDesignation" type="text">
+      <label for="editCode">Employee code</label><input id="editCode" type="text">
+      <label for="editEmail">Email ID</label><input id="editEmail" type="email">
+    </div>
+    <label for="editShowroom">Showroom *</label><select id="editShowroom"></select>
     <label class="check"><input id="editActive" type="checkbox"> Active (can use the app)</label>
     <div class="row" style="margin-top:16px">
       <div style="flex:0 0 auto"><button id="saveEmpBtn" type="button">Save</button></div>
@@ -282,11 +389,16 @@
 
     const $ = (id) => document.getElementById(id);
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const TABS = ['attendance', 'staff', 'showrooms', 'settings'];
+    const TABS = ['attendance', 'staff', 'showrooms', 'users', 'settings'];
     let currentTab = 'attendance';
     let showrooms = [];
     let employees = [];
     let refreshTimer = null;
+    let access = { role: 'master', showroom_ids: [] }; // after login: the master admin, or HR with their showrooms
+    let needsSql10 = false;                             // true until 10_roles_and_showrooms.sql has been run
+    const isMaster = () => access.role === 'master';
+    // The showrooms this login may see and manage (HR: only their own)
+    const myShowrooms = () => (isMaster() ? showrooms : showrooms.filter((s) => access.showroom_ids.includes(s.id)));
 
     // ---------- Date and time helpers (Indian time) ----------
     const ymd = (d) => new Intl.DateTimeFormat('en-CA', {
@@ -315,8 +427,9 @@
       el.className = 'msg ' + (ok ? 'ok' : 'bad');
     }
 
-    const showroomOptions = (selectedId) => showrooms
-      .map((r) => `<option value="${r.id}"${r.id === selectedId ? ' selected' : ''}>${escapeHtml(r.name)}</option>`)
+    const showroomOptions = (selectedId) => myShowrooms()
+      .map((r) => `<option value="${r.id}"${r.id === selectedId ? ' selected' : ''}>` +
+        `${r.showroom_no ? r.showroom_no + ' · ' : ''}${escapeHtml(r.name)}</option>`)
       .join('');
 
     const showroomName = (id) => showrooms.find((s) => s.id === id)?.name ?? '-';
@@ -367,22 +480,42 @@
         .order('logged_at', { ascending: true }));
     }
 
+    // Employees, page by page (there can be more than 1000). Works before 09_employee_details.sql is run too.
+    let needsSql09 = false;
+    async function loadEmployees() {
+      const base = 'id, full_name, phone, is_active, showroom_id, face_registered_at';
+      try {
+        const rows = await fetchAll(() => db.from('employees')
+          .select(base + ', employee_code, designation, email').order('id'));
+        needsSql09 = false;
+        return rows;
+      } catch (err) {
+        if (err.code !== '42703') throw err; // 42703 = the new columns do not exist yet
+        needsSql09 = true;
+        return fetchAll(() => db.from('employees').select(base).order('id'));
+      }
+    }
+
+    // Showrooms with their details (number, address, contact); works before 10_roles_and_showrooms.sql too
+    async function loadShowrooms() {
+      const base = 'id, name, latitude, longitude, radius_meters';
+      let res = await db.from('showrooms')
+        .select(base + ', showroom_no, brand, address, city, pincode, contact_phone, email, contact_person').order('name');
+      if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base).order('name');
+      if (res.error) throw res.error;
+      return res.data.sort((a, b) => (a.showroom_no ?? 1e9) - (b.showroom_no ?? 1e9) || a.name.localeCompare(b.name));
+    }
+
     async function loadBase() {
-      const [s, e] = await Promise.all([
-        db.from('showrooms').select('id, name, latitude, longitude, radius_meters').order('name'),
-        db.from('employees')
-          .select('id, full_name, phone, is_active, showroom_id, face_registered_at')
-          .order('full_name'),
-      ]);
-      if (s.error) throw s.error;
-      if (e.error) throw e.error;
-      showrooms = s.data;
-      employees = e.data;
+      const [srs, emps] = await Promise.all([loadShowrooms(), loadEmployees()]);
+      showrooms = srs;
+      employees = emps.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      $('sqlNotice').classList.toggle('hidden', !needsSql09);
 
       // Showroom filter on the Attendance tab
       const filter = $('showroom');
       const currentFilter = filter.value;
-      filter.innerHTML = '<option value="">All showrooms</option>' + showroomOptions();
+      filter.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
       filter.value = currentFilter;
 
       // Showroom choice in "Add an employee"
@@ -391,11 +524,12 @@
       newSr.innerHTML = showroomOptions();
       if (currentNew) newSr.value = currentNew;
 
-      // Default showroom in "Add many employees"
+      // Showroom choice in "Add many employees"
       const bulkSr = $('bulkShowroom');
       const currentBulk = bulkSr.value;
-      bulkSr.innerHTML = '<option value="">None (each row names its showroom)</option>' + showroomOptions();
+      bulkSr.innerHTML = '<option value="">Choose a showroom</option>' + showroomOptions();
       bulkSr.value = currentBulk;
+      if (!bulkSr.value && myShowrooms().length === 1) bulkSr.value = String(myShowrooms()[0].id); // HR with one showroom
     }
 
     // Active staff for the chosen showroom
@@ -512,7 +646,7 @@
         await loadBase();
         const logs = await loadLogs(from, to);
         const staff = visibleEmployees();
-        const rows = [['Date', 'Employee', 'Phone', 'Showroom', 'Status',
+        const rows = [['Date', 'Employee code', 'Employee', 'Designation', 'Phone', 'Showroom', 'Status',
           'First in', 'Last out', 'Hours', 'Lowest face match %', 'Entries']];
 
         for (let i = 0; i < days; i++) {
@@ -522,7 +656,8 @@
             const mine = dayLogs.filter((l) => l.employee_id === emp.id);
             const s = summarize(mine, dateStr);
             rows.push([
-              dateStr, emp.full_name, emp.phone, showroomName(emp.showroom_id), s.status,
+              dateStr, emp.employee_code ?? '', emp.full_name, emp.designation ?? '', emp.phone,
+              showroomName(emp.showroom_id), s.status,
               s.firstIn ? timeIST(s.firstIn) : '', s.lastOut ? timeIST(s.lastOut) : '',
               s.ms ? hours(s.ms) : '', s.face == null ? '' : Math.round(s.face * 100),
               mine.filter((l) => !l.cancelled_at)
@@ -553,8 +688,27 @@
     async function renderStaff() {
       try {
         await loadBase();
-        $('staffRows').innerHTML = employees.map((emp) => `<tr>
-          <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span></td>
+        drawStaff();
+      } catch (err) {
+        setMsg('staffMsg', 'Could not load staff: ' + (err.message || err), false);
+      }
+      renderImportLog();
+    }
+
+    // The staff table, filtered by the search box
+    function drawStaff() {
+      const words = $('staffSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
+      const shown = employees.filter((emp) => {
+        const text = [emp.full_name, emp.phone, emp.employee_code, emp.designation, showroomName(emp.showroom_id)]
+          .join(' ').toLowerCase();
+        return words.every((w) => text.includes(w));
+      });
+      $('staffCount').textContent = shown.length === employees.length
+        ? `${employees.length} staff` : `Showing ${shown.length} of ${employees.length}`;
+      $('staffRows').innerHTML = shown.map((emp) => `<tr>
+          <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}${
+            emp.employee_code ? ' · Code ' + escapeHtml(emp.employee_code) : ''}</span></td>
+          <td>${escapeHtml(emp.designation || '-')}</td>
           <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
           <td>${emp.face_registered_at
               ? '<span class="badge b-green">Registered</span><br><span class="muted">' + dateIST(emp.face_registered_at) + '</span>'
@@ -564,28 +718,37 @@
             <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>
             <button type="button" class="secondary" data-act="face" data-id="${emp.id}">Reset face</button>
             <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>
+            ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}
           </td>
-        </tr>`).join('') || '<tr><td colspan="5" class="muted">No staff yet.</td></tr>';
-      } catch (err) {
-        setMsg('staffMsg', 'Could not load staff: ' + (err.message || err), false);
-      }
+        </tr>`).join('') || `<tr><td colspan="6" class="muted">${employees.length ? 'Nobody matches the search.' : 'No staff yet.'}</td></tr>`;
     }
+    $('staffSearch').addEventListener('input', drawStaff);
+
+    const looksLikeEmail = (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
 
     $('addEmpBtn').addEventListener('click', async () => {
       const name = $('newName').value.trim();
       const phone = $('newPhone').value.replace(/\D/g, '');
+      const designation = $('newDesignation').value.trim();
+      const code = $('newCode').value.trim();
+      const email = $('newEmail').value.trim();
       const showroomId = Number($('newShowroom').value);
-      if (!name) return setMsg('staffMsg', 'Please enter the name.', false);
+      if (needsSql09) return setMsg('staffMsg', 'Please run 09_employee_details.sql in Supabase first (see the red box above).', false);
+      if (!name) return setMsg('staffMsg', 'Please enter the employee name.', false);
       if (phone.length !== 10) return setMsg('staffMsg', 'Please enter a 10-digit mobile number.', false);
+      if (!designation) return setMsg('staffMsg', 'Please enter the designation.', false);
+      if (email && !looksLikeEmail(email)) return setMsg('staffMsg', 'The email ID does not look right.', false);
       if (!showroomId) return setMsg('staffMsg', 'Please add a showroom first (Showrooms tab).', false);
 
       $('addEmpBtn').disabled = true;
       setMsg('staffMsg', 'Adding…', true);
       try {
-        await callAdminUsers({ action: 'create', full_name: name, phone, showroom_id: showroomId });
+        await callAdminUsers({
+          action: 'create', full_name: name, phone, showroom_id: showroomId,
+          designation, employee_code: code, email,
+        });
         setMsg('staffMsg', `${name} added. Their login and first password: ${phone}`, true);
-        $('newName').value = '';
-        $('newPhone').value = '';
+        for (const id of ['newName', 'newPhone', 'newDesignation', 'newCode', 'newEmail']) $(id).value = '';
         await renderStaff();
       } catch (err) {
         setMsg('staffMsg', err.message || String(err), false);
@@ -614,8 +777,21 @@
         if (btn.dataset.act === 'face') {
           if (!confirm(`Reset the face of ${emp.full_name}?\n\nThey will need to register their face again ` +
                        '(in front of the manager) before they can check in.')) return;
-          await rpc('admin_reset_face', { p_employee_id: emp.id });
+          await rpc(needsSql10 ? 'admin_reset_face' : 'reset_employee_face', { p_employee_id: emp.id });
           setMsg('staffMsg', `Face reset for ${emp.full_name}. They can register again in the app.`, true);
+        }
+        if (btn.dataset.act === 'delete') {
+          if (!isMaster()) return;
+          const typed = prompt(`Delete ${emp.full_name} completely?\n\n` +
+            'This also deletes their face registration and ALL their attendance records. It cannot be undone.\n' +
+            'To keep their history, click Cancel, then use Edit and untick "Active" instead.\n\n' +
+            `Type their mobile number (${emp.phone}) to confirm:`);
+          if ((typed || '').replace(/\D/g, '') !== emp.phone) {
+            if (typed !== null) setMsg('staffMsg', 'Not deleted: the mobile number did not match.', false);
+            return;
+          }
+          await callAdminUsers({ action: 'delete_employee', employee_id: emp.id });
+          setMsg('staffMsg', `${emp.full_name} deleted.`, true);
         }
         await renderStaff();
       } catch (err) {
@@ -628,6 +804,10 @@
     function openEmployeeDialog(emp) {
       $('editId').value = emp.id;
       $('editName').value = emp.full_name;
+      $('editDesignation').value = emp.designation || '';
+      $('editCode').value = emp.employee_code || '';
+      $('editEmail').value = emp.email || '';
+      $('editExtra').classList.toggle('hidden', needsSql09);
       $('editShowroom').innerHTML = showroomOptions(emp.showroom_id);
       $('editActive').checked = emp.is_active;
       setMsg('empMsg', '');
@@ -637,14 +817,26 @@
     $('closeEmpBtn').addEventListener('click', () => $('empDialog').close());
 
     $('saveEmpBtn').addEventListener('click', async () => {
+      const email = $('editEmail').value.trim();
+      if (!needsSql09 && email && !looksLikeEmail(email)) return setMsg('empMsg', 'The email ID does not look right.', false);
       $('saveEmpBtn').disabled = true;
       try {
-        await rpc('admin_update_employee', {
+        const details = {
           p_employee_id: Number($('editId').value),
           p_full_name: $('editName').value,
           p_showroom_id: Number($('editShowroom').value),
           p_is_active: $('editActive').checked,
-        });
+        };
+        if (needsSql09) {
+          await rpc('admin_update_employee', details); // before 09_employee_details.sql
+        } else {
+          await rpc('admin_save_employee', {
+            ...details,
+            p_employee_code: $('editCode').value,
+            p_designation: $('editDesignation').value,
+            p_email: email,
+          });
+        }
         $('empDialog').close();
         setMsg('staffMsg', 'Saved.', true);
         await renderStaff();
@@ -704,21 +896,48 @@
       }
     });
 
-    // ======================= Add many employees (pasted from Excel) =======================
-    let bulkRows = [];   // one entry per pasted row, with its check result
-    let bulkBusy = false; // true while logins are being created
+    // ======================= Add many employees (Excel upload) =======================
+    let bulkRows = [];     // one entry per Excel row, with its check result
+    let bulkBusy = false;  // true while logins are being created
     let bulkTimer = null;
+    let bulkFileName = ''; // the uploaded file's name
+    let bulkTable = null;  // the uploaded sheet's cells: { cells, firstRow }
+    let bulkBook = null;   // the uploaded workbook (to switch sheets)
 
-    // "+91 98765-43210", "919876543210" or "09876543210" -> "9876543210"
-    function cleanMobile(value) {
-      let digits = String(value ?? '').replace(/\D/g, '');
+    // The free SheetJS Excel reader, loaded only when a file is chosen
+    let excelReader = null;
+    function loadExcelReader() {
+      if (window.XLSX) return Promise.resolve(window.XLSX);
+      if (!excelReader) {
+        excelReader = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+          script.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error('the Excel reader did not start')));
+          script.onerror = () => {
+            excelReader = null;
+            script.remove();
+            reject(new Error('the Excel reader could not be loaded (check the internet connection)'));
+          };
+          document.head.appendChild(script);
+        });
+      }
+      return excelReader;
+    }
+
+    // Mobile number rule: missing, or fewer than 10 digits = skip.
+    // "+91 98765-43210", "919876543210" and "09876543210" all become "9876543210".
+    function checkMobile(value) {
+      const raw = String(value ?? '').trim();
+      let digits = raw.replace(/\D/g, '');
       if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
       if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
-      return digits;
+      if (!digits) return { problem: 'Mobile number not available.' };
+      if (digits.length < 10) return { problem: `Mobile number "${raw}" has less than 10 digits.` };
+      if (digits.length > 10) return { problem: `Mobile number "${raw}" has more than 10 digits.` };
+      return { phone: digits };
     }
-    const isMobile = (digits) => /^[6-9]\d{9}$/.test(digits);
 
-    // Excel copies cells separated by tabs; a CSV file uses commas (and quotes around values with commas)
+    // Pasted rows: Excel copies cells separated by tabs; a CSV file uses commas (quotes around values with commas)
     function splitLine(line) {
       const sep = line.includes('\t') ? '\t' : ',';
       const cells = [];
@@ -740,7 +959,7 @@
         }
       }
       cells.push(cell);
-      return cells.map((c) => c.replace(/\s+/g, ' ').trim());
+      return cells;
     }
 
     // Finds a showroom by name: exact first ("main showroom" = "Main Showroom"), then a single partial match
@@ -748,130 +967,238 @@
     function findShowroom(text) {
       const key = simplify(text);
       if (!key) return null;
-      const exact = showrooms.find((s) => simplify(s.name) === key);
+      const exact = myShowrooms().find((s) => simplify(s.name) === key);
       if (exact) return exact;
-      const partial = showrooms.filter((s) => {
+      const partial = myShowrooms().filter((s) => {
         const name = simplify(s.name);
         return name && (name.includes(key) || key.includes(name));
       });
       return partial.length === 1 ? partial[0] : null;
     }
 
-    // Index of the biggest number in a list, or -1 when all are 0
-    function bestColumn(counts, skip = []) {
-      let best = -1;
-      counts.forEach((n, i) => {
-        if (n > 0 && !skip.includes(i) && (best < 0 || n > counts[best])) best = i;
-      });
-      return best;
+    // Which column holds what, from the heading row
+    const HEADINGS = {
+      serial: /\b(s|sl|si|sr)\s*\.?\s*no\b|serial/i,
+      email: /e-?\s*mail/i,
+      code: /code|\bemp(loyee)?\s*\.?\s*id\b|staff\s*id/i,
+      mobile: /mobile|phone|contact|cell|whats\s*app|\bph\b/i,
+      designation: /designation|role|position|\bpost\b|job\s*title/i,
+      showroom: /showroom|branch|location|outlet|dealer|store/i,
+      name: /name/i,
+    };
+    function mapColumns(heading) {
+      const col = {};
+      const taken = new Set();
+      for (const key of Object.keys(HEADINGS)) {
+        const i = heading.findIndex((h, idx) => !taken.has(idx) && HEADINGS[key].test(String(h ?? '')));
+        if (i >= 0) { col[key] = i; taken.add(i); }
+      }
+      return col;
     }
 
-    // Reads the pasted text and checks every row
-    function parseBulk(text) {
-      const table = text.split(/\r?\n/).filter((l) => l.trim() !== '').map(splitLine);
-      if (!table.length) return { rows: [] };
-      const width = Math.max(...table.map((r) => r.length));
-
-      // A heading row has no mobile number in it and a heading such as Name or Mobile
-      const first = table[0];
-      const isHeading = !first.some((c) => isMobile(cleanMobile(c))) &&
-        first.some((c) => /mobile|phone|contact|cell|\bph\b|\bname\b/i.test(c));
-
-      let nameCol, phoneCol, srCol;
-      if (isHeading) {
-        phoneCol = first.findIndex((c) => /mobile|phone|contact|cell|whats\s*app|\bph\b/i.test(c));
-        srCol = first.findIndex((c) => /showroom|branch|location|outlet|dealer|store|site/i.test(c));
-        nameCol = first.findIndex((c, i) => i !== srCol && i !== phoneCol && /name/i.test(c));
-      } else {
-        // No heading: work out the columns from what is in them
-        const count = (test) => Array.from({ length: width },
-          (_, i) => table.filter((r) => test(r[i] ?? '')).length);
-        phoneCol = bestColumn(count((c) => isMobile(cleanMobile(c))));
-        srCol = bestColumn(count((c) => !!findShowroom(c)), [phoneCol]);
-        nameCol = bestColumn(count((c) => /[a-z]/i.test(c)), [phoneCol, srCol]);
+    // Reads the sheet's cells and checks every row
+    function parseBulk(cells, firstRow) {
+      let headIndex = -1;
+      let col = null;
+      for (let i = 0; i < Math.min(cells.length, 10); i++) {
+        const c = mapColumns(cells[i]);
+        if (c.name !== undefined && c.mobile !== undefined) { headIndex = i; col = c; break; }
       }
-      if (phoneCol < 0) {
-        return { error: 'Could not find the mobile number column. Include the heading row, with a heading such as "Mobile".' };
+      if (headIndex < 0) {
+        return { error: 'Could not find the heading row. It needs headings such as S.NO, Employee Name, Designation and Mobile Number.' };
       }
-      if (nameCol < 0) {
-        return { error: 'Could not find the name column. Include the heading row, with a heading such as "Name".' };
+      const missing = [['serial', 'S.NO'], ['name', 'Employee Name'], ['designation', 'Designation'], ['mobile', 'Mobile Number']]
+        .filter(([key]) => col[key] === undefined).map(([, label]) => label);
+      if (missing.length) return { error: 'The sheet has no column for: ' + missing.join(', ') + '.' };
+
+      const value = (row, key) => (col[key] === undefined ? '' : String(row[col[key]] ?? '').replace(/\s+/g, ' ').trim());
+      const rows = [];
+      for (let i = headIndex + 1; i < cells.length; i++) {
+        const row = cells[i];
+        if (!row.some((c) => String(c ?? '').trim() !== '')) continue; // empty row
+        rows.push({
+          sheetRow: firstRow + i,
+          serial: value(row, 'serial'),
+          code: value(row, 'code'),
+          name: value(row, 'name'),
+          designation: value(row, 'designation'),
+          raw: value(row, 'mobile'),
+          email: value(row, 'email'),
+          srText: value(row, 'showroom'),
+          phone: '',
+          saveCode: '',
+          saveEmail: '',
+          showroom: null,
+          status: 'ready',
+          reason: '',
+          notes: [],
+        });
       }
 
       const fallback = showrooms.find((s) => String(s.id) === $('bulkShowroom').value) || null;
-      const seen = new Map(); // mobile number -> row number
-      const rows = (isHeading ? table.slice(1) : table).map((cells, i) => {
-        const row = {
-          n: i + 1,
-          name: cells[nameCol] ?? '',
-          raw: cells[phoneCol] ?? '',
-          phone: cleanMobile(cells[phoneCol]),
-          srText: srCol >= 0 ? (cells[srCol] ?? '') : '',
-          showroom: null,
-          status: 'ready',
-          note: '',
-        };
-        const problem = (note) => { row.status = 'problem'; row.note = note; return row; };
+      const label = (r) => (r.serial ? `S.NO ${r.serial}` : `row ${r.sheetRow}`);
+      const firstWithPhone = new Map(); // mobile number -> first row that has it
+      const codeRows = new Map();       // employee code -> rows that have it
 
-        if (!row.name) return problem('The name is missing.');
-        if (!isMobile(row.phone)) {
-          return problem(`"${row.raw || '(empty)'}" is not a 10-digit mobile number.`);
-        }
-        const existing = employees.find((e) => e.phone === row.phone);
-        if (existing) {
-          return problem(`Already in the staff list as ${existing.full_name}` +
-            (existing.is_active ? '.' : ' (inactive: use Edit to make them active again).'));
-        }
-        if (seen.has(row.phone)) return problem(`Same mobile number as row ${seen.get(row.phone)}.`);
-        seen.set(row.phone, row.n);
+      for (const r of rows) {
+        const problems = [];
+        if (!r.serial) problems.push('S.NO is missing.');
+        if (!r.name) problems.push('Employee name is missing.');
+        if (!r.designation) problems.push('Designation is missing.');
+        const mobile = checkMobile(r.raw);
+        if (mobile.problem) problems.push(mobile.problem);
+        else r.phone = mobile.phone;
 
-        row.showroom = row.srText ? findShowroom(row.srText) : fallback;
-        if (row.srText && !row.showroom) {
-          return problem(`Showroom "${row.srText}" not found. Add it in the Showrooms tab or correct the name.`);
+        if (r.phone && !problems.length) {
+          const existing = employees.find((e) => e.phone === r.phone);
+          if (existing) {
+            problems.push(`Already has a login (${existing.full_name}, ${showroomName(existing.showroom_id)}` +
+              (existing.is_active ? ').' : ', inactive).'));
+          } else if (firstWithPhone.has(r.phone)) {
+            problems.push(`Same mobile number as ${label(firstWithPhone.get(r.phone))}.`);
+          }
         }
-        if (!row.showroom) return problem('No showroom. Choose one in "Showroom for rows that don\'t name one".');
-        return row;
-      });
+        if (r.phone && !firstWithPhone.has(r.phone)) firstWithPhone.set(r.phone, r);
+
+        if (!problems.length) {
+          r.showroom = r.srText ? findShowroom(r.srText) : fallback;
+          if (r.srText && !r.showroom) {
+            problems.push(isMaster()
+              ? `Showroom "${r.srText}" not found. Add it in the Showrooms tab or correct the name.`
+              : `Showroom "${r.srText}" is not one of your showrooms.`);
+          } else if (!r.showroom) {
+            problems.push('Choose the showroom for these employees (above).');
+          }
+        }
+
+        // Optional details: saved when they look right, otherwise noted
+        if (r.code) {
+          if (/\d/.test(r.code)) r.saveCode = r.code;
+          else r.notes.push(`Employee code "${r.code}" not saved (no number in it).`);
+        }
+        if (r.email) {
+          if (looksLikeEmail(r.email)) r.saveEmail = r.email;
+          else r.notes.push(`Email "${r.email}" not saved (not a valid email).`);
+        }
+        if (r.saveCode) codeRows.set(r.saveCode, (codeRows.get(r.saveCode) || []).concat(r));
+
+        if (problems.length) {
+          r.status = 'problem';
+          r.reason = problems.join(' ');
+        }
+      }
+
+      // The same employee code twice: still created, but noted so HR can correct it
+      for (const [code, list] of codeRows) {
+        if (list.length > 1) {
+          for (const r of list) {
+            r.notes.push(`Employee code ${code} is also given to ${list.filter((x) => x !== r).map(label).join(', ')}.`);
+          }
+        }
+        const owner = employees.find((e) => e.employee_code === code && !list.some((x) => x.phone === e.phone));
+        if (owner) for (const r of list) r.notes.push(`Employee code ${code} already belongs to ${owner.full_name}.`);
+      }
       return { rows };
     }
 
+    const RESULT_BADGE = {
+      ready: '<span class="badge b-grey">Ready</span>',
+      problem: '<span class="badge b-red">Skipped</span>',
+      working: '<span class="badge b-orange">Creating…</span>',
+      created: '<span class="badge b-green">Created</span>',
+      failed: '<span class="badge b-red">Failed</span>',
+    };
+
     function renderBulkRows() {
-      const badge = {
-        ready: '<span class="badge b-grey">Ready</span>',
-        problem: '<span class="badge b-red">Skipped</span>',
-        working: '<span class="badge b-orange">Creating…</span>',
-        created: '<span class="badge b-green">Created</span>',
-        failed: '<span class="badge b-red">Failed</span>',
-      };
       $('bulkRows').innerHTML = bulkRows.map((r) => `<tr>
-          <td>${r.n}</td>
+          <td>${escapeHtml(r.serial || '-')}</td>
+          <td>${escapeHtml(r.code || '-')}</td>
           <td>${escapeHtml(r.name || '-')}</td>
-          <td>${escapeHtml(isMobile(r.phone) ? r.phone : (r.raw || '-'))}</td>
+          <td>${escapeHtml(r.designation || '-')}</td>
+          <td>${escapeHtml(r.phone || r.raw || '-')}</td>
           <td>${escapeHtml(r.showroom ? r.showroom.name : (r.srText || '-'))}</td>
-          <td class="result">${badge[r.status]} <span class="muted">${escapeHtml(r.note)}</span></td>
+          <td class="result">${RESULT_BADGE[r.status]} ${escapeHtml(r.reason)}${
+            r.notes.length ? '<br><span class="muted">' + escapeHtml(r.notes.join(' ')) + '</span>' : ''}</td>
         </tr>`).join('');
       $('bulkPreview').classList.toggle('hidden', bulkRows.length === 0);
+      $('bulkDownloadBtn').classList.toggle('hidden', bulkRows.length === 0);
 
       const ready = bulkRows.filter((r) => r.status === 'ready').length;
-      $('bulkCreateBtn').disabled = bulkBusy || ready === 0;
+      $('bulkCreateBtn').disabled = bulkBusy || ready === 0 || needsSql09;
       $('bulkCreateBtn').textContent = ready ? `Create ${ready} login${ready === 1 ? '' : 's'}` : 'Create logins';
+    }
+
+    // The rows to check: pasted rows win over the uploaded file
+    function bulkCells() {
+      const text = $('bulkInput').value;
+      if (text.trim()) return { name: 'Pasted rows', cells: text.split(/\r?\n/).map(splitLine), firstRow: 1 };
+      if (bulkTable) return { name: bulkFileName, cells: bulkTable.cells, firstRow: bulkTable.firstRow };
+      return null;
     }
 
     function checkBulk() {
       if (bulkBusy) return;
-      $('bulkDownloadBtn').classList.add('hidden');
-      const text = $('bulkInput').value;
-      const result = text.trim() ? parseBulk(text) : { rows: [] };
+      const source = bulkCells();
+      const result = source ? parseBulk(source.cells, source.firstRow) : { rows: [] };
       bulkRows = result.rows || [];
       renderBulkRows();
       if (result.error) return setMsg('bulkMsg', result.error, false);
-      if (!bulkRows.length) return setMsg('bulkMsg', '');
+      if (!bulkRows.length) return setMsg('bulkMsg', source ? 'No employee rows found under the heading row.' : '', false);
+      if (needsSql09) return setMsg('bulkMsg', 'Please run 09_employee_details.sql in Supabase first (see the red box above).', false);
       const ready = bulkRows.filter((r) => r.status === 'ready').length;
       const skipped = bulkRows.length - ready;
-      setMsg('bulkMsg', `${ready} ready to create` +
-        (skipped ? `, ${skipped} will be skipped (see the Result column).` : '.'), ready > 0);
+      const noShowroom = bulkRows.some((r) => r.reason.startsWith('Choose the showroom'));
+      setMsg('bulkMsg', `${bulkRows.length} rows read: ${ready} ready to create` +
+        (skipped ? `, ${skipped} will be skipped (see the Result column).` : '.') +
+        (noShowroom ? ' Choose the showroom for these employees first.' : ''), ready > 0 && !noShowroom);
     }
 
+    // An Excel sheet -> rows of cell texts, keeping the sheet's own row numbers
+    function readSheet(name) {
+      const sheet = bulkBook.Sheets[name];
+      if (!sheet || !sheet['!ref']) return { cells: [], firstRow: 1 };
+      const firstRow = window.XLSX.utils.decode_range(sheet['!ref']).s.r + 1;
+      const cells = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '', blankrows: true });
+      return { cells: cells.map((row) => row.map((v) => String(v ?? ''))), firstRow };
+    }
+
+    $('bulkFile').addEventListener('change', async () => {
+      const file = $('bulkFile').files[0];
+      bulkBook = null;
+      bulkTable = null;
+      bulkFileName = '';
+      $('bulkSheetBox').classList.add('hidden');
+      if (!file) return checkBulk();
+      $('bulkInput').value = ''; // the file replaces any pasted rows
+      setMsg('bulkMsg', `Reading ${file.name}…`, true);
+      try {
+        const XLSX = await loadExcelReader();
+        bulkBook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+        const visible = bulkBook.SheetNames.filter((n, i) => !bulkBook.Workbook?.Sheets?.[i]?.Hidden);
+        $('bulkSheet').innerHTML = visible.map((n) => `<option>${escapeHtml(n)}</option>`).join('');
+        $('bulkSheetBox').classList.toggle('hidden', visible.length < 2);
+        bulkFileName = file.name;
+        bulkTable = readSheet(visible[0]);
+        checkBulk();
+      } catch (err) {
+        $('bulkFile').value = '';
+        setMsg('bulkMsg', `Could not read the file: ${err.message || err}. You can also paste the rows instead.`, false);
+      }
+    });
+
+    $('bulkSheet').addEventListener('change', () => {
+      if (!bulkBook) return;
+      bulkTable = readSheet($('bulkSheet').value);
+      checkBulk();
+    });
+
     $('bulkInput').addEventListener('input', () => {
+      if ($('bulkInput').value.trim() && $('bulkFile').value) {
+        $('bulkFile').value = ''; // pasted rows replace the uploaded file
+        bulkBook = null;
+        bulkTable = null;
+        $('bulkSheetBox').classList.add('hidden');
+      }
       clearTimeout(bulkTimer);
       bulkTimer = setTimeout(checkBulk, 300);
     });
@@ -879,133 +1206,413 @@
     $('bulkClearBtn').addEventListener('click', () => {
       if (bulkBusy) return;
       $('bulkInput').value = '';
+      $('bulkFile').value = '';
+      bulkBook = null;
+      bulkTable = null;
+      bulkFileName = '';
+      $('bulkSheetBox').classList.add('hidden');
       checkBulk();
     });
 
+    // A random id for one upload (to group its lines in the log)
+    function newBatchId() {
+      if (crypto.randomUUID) return crypto.randomUUID();
+      const b = crypto.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40;
+      b[8] = (b[8] & 0x3f) | 0x80;
+      const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    }
+
+    // One checked row -> one line of the upload log
+    function toLogRow(r, batchId, fileName) {
+      return {
+        batch_id: batchId,
+        file_name: fileName,
+        sheet_row: r.sheetRow,
+        serial_no: r.serial || null,
+        employee_code: r.code || null,
+        full_name: r.name || null,
+        designation: r.designation || null,
+        mobile: r.phone || (/\d/.test(r.raw) ? r.raw : null), // a '-' or blank cell is logged as empty
+        email: r.email || null,
+        // HR can only log lines for their own showrooms, so skipped rows get the chosen showroom too
+        showroom_id: r.showroom ? r.showroom.id
+          : (Number($('bulkShowroom').value) || (isMaster() ? null : myShowrooms()[0]?.id ?? null)),
+        result: { created: 'created', failed: 'failed' }[r.status] || (r.status === 'ready' ? 'ready' : 'skipped'),
+        reason: [r.reason, ...r.notes].filter(Boolean).join(' ') || null,
+      };
+    }
+
     $('bulkCreateBtn').addEventListener('click', async () => {
       const todo = bulkRows.filter((r) => r.status === 'ready');
-      if (!todo.length || bulkBusy) return;
-      if (!confirm(`Create ${todo.length} login${todo.length === 1 ? '' : 's'} now?\n\n` +
-                   "Each person's username and first password will be their mobile number.")) return;
+      if (!todo.length || bulkBusy || needsSql09) return;
+      const skipped = bulkRows.length - todo.length;
+      if (!confirm(`Create ${todo.length} login${todo.length === 1 ? '' : 's'} now?` +
+                   (skipped ? `\n${skipped} row${skipped === 1 ? '' : 's'} will be skipped and written to the upload log.` : '') +
+                   "\n\nEach person's username and first password will be their mobile number.")) return;
 
+      const fileName = bulkCells()?.name || '';
       bulkBusy = true;
-      $('bulkInput').disabled = true;
-      $('bulkShowroom').disabled = true;
-      $('bulkClearBtn').disabled = true;
+      for (const id of ['bulkFile', 'bulkInput', 'bulkShowroom', 'bulkSheet', 'bulkClearBtn']) $(id).disabled = true;
       let created = 0;
       let failed = 0;
-      for (const [i, row] of todo.entries()) {
+      for (const [i, r] of todo.entries()) {
         setMsg('bulkMsg', `Creating ${i + 1} of ${todo.length}… please keep this page open.`, true);
-        row.status = 'working';
+        r.status = 'working';
         renderBulkRows();
         try {
-          await callAdminUsers({ action: 'create', full_name: row.name, phone: row.phone, showroom_id: row.showroom.id });
-          row.status = 'created';
-          row.note = '';
+          await callAdminUsers({
+            action: 'create', full_name: r.name, phone: r.phone, showroom_id: r.showroom.id,
+            designation: r.designation, employee_code: r.saveCode, email: r.saveEmail,
+          });
+          r.status = 'created';
           created++;
         } catch (err) {
-          row.status = 'failed';
-          row.note = err.message || String(err);
+          r.status = 'failed';
+          r.reason = err.message || String(err);
           failed++;
         }
         renderBulkRows();
       }
+
+      // Save every row's result in the upload log
+      let logNote = ' The result is saved in the upload log below.';
+      try {
+        const batchId = newBatchId();
+        const lines = bulkRows.map((r) => toLogRow(r, batchId, fileName));
+        for (let i = 0; i < lines.length; i += 500) {
+          const { error } = await db.from('import_log').insert(lines.slice(i, i + 500));
+          if (error) throw new Error(error.message);
+        }
+      } catch (err) {
+        logNote = ` The upload log could not be saved (${err.message || err}); click "Download log" to keep a copy.`;
+      }
+
       bulkBusy = false;
-      $('bulkInput').disabled = false;
-      $('bulkShowroom').disabled = false;
-      $('bulkClearBtn').disabled = false;
+      for (const id of ['bulkFile', 'bulkInput', 'bulkShowroom', 'bulkSheet', 'bulkClearBtn']) $(id).disabled = false;
       renderBulkRows();
-      setMsg('bulkMsg', `Done: ${created} created` + (failed ? `, ${failed} failed (see the Result column).` : '.') +
-        ' Click "Download the list" to keep a copy.', failed === 0);
-      $('bulkDownloadBtn').classList.remove('hidden');
+      setMsg('bulkMsg', `Done: ${created} created, ${skipped} skipped` + (failed ? `, ${failed} failed.` : '.') + logNote,
+        failed === 0 && !logNote.includes('could not'));
       await renderStaff();
     });
 
-    // The result as a file for Excel: name, username, first password, showroom, result
-    $('bulkDownloadBtn').addEventListener('click', () => {
-      const label = { ready: 'Not created', problem: 'Skipped', working: 'Not created', created: 'Created', failed: 'Failed' };
-      const rows = [['Name', 'Username', 'First password', 'Showroom', 'Result', 'Note']];
-      for (const r of bulkRows) {
-        const ok = r.status === 'created';
-        rows.push([r.name, ok ? r.phone : (r.phone || r.raw), ok ? r.phone : '',
-          r.showroom ? r.showroom.name : r.srText, label[r.status], r.note]);
+    // The upload log as a file for Excel
+    const LOG_RESULT = { created: 'Created', skipped: 'Skipped', failed: 'Failed', ready: 'Ready (not created yet)' };
+    function downloadLog(lines, fileName) {
+      const table = [['Uploaded at', 'File', 'Excel row', 'S.NO', 'Employee code', 'Employee name', 'Designation',
+        'Mobile number (username)', 'Email ID', 'Showroom', 'Result', 'Reason / notes']];
+      for (const l of lines) {
+        table.push([l.created_at ? `${dateIST(l.created_at)} ${timeIST(l.created_at)}` : 'Not saved yet', l.file_name,
+          l.sheet_row, l.serial_no, l.employee_code, l.full_name, l.designation, l.mobile, l.email,
+          l.showroom_id ? showroomName(l.showroom_id) : '', LOG_RESULT[l.result] || l.result, l.reason]);
       }
-      const csv = rows
-        .map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
-        .join('\r\n');
+      // A value starting with = + - @ would be read by Excel as a formula, so it gets a ' in front
+      const safe = (v) => { const s = String(v ?? ''); return /^[=+\-@]/.test(s) ? "'" + s : s; };
+      const csv = table.map((r) => r.map((v) => `"${safe(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
       const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `new_logins_${todayIST()}.csv`;
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    $('bulkDownloadBtn').addEventListener('click', () => {
+      const name = bulkCells()?.name || 'upload';
+      downloadLog(bulkRows.map((r) => toLogRow(r, '', name)), `upload_log_${todayIST()}.csv`);
     });
 
-    // ======================= Showrooms tab =======================
-    async function renderShowrooms() {
+    // ---------- Upload log: the latest uploads, each with its own log file ----------
+    async function renderImportLog() {
+      if (needsSql09) {
+        $('importRows').innerHTML = '';
+        return setMsg('importMsg', 'The upload log starts once 09_employee_details.sql has been run in Supabase.', false);
+      }
       try {
-        await loadBase();
-        $('srRows').innerHTML = showrooms.map((s) => `<tr>
-          <td><b>${escapeHtml(s.name)}</b></td>
-          <td>${s.latitude}</td>
-          <td>${s.longitude}</td>
-          <td>${s.radius_meters} m</td>
-          <td>${employees.filter((e) => e.is_active && e.showroom_id === s.id).length}</td>
-          <td class="actions"><button type="button" class="secondary" data-id="${s.id}">Edit</button></td>
-        </tr>`).join('') || '<tr><td colspan="6" class="muted">No showrooms yet.</td></tr>';
+        const { data, error } = await db.from('import_log_batches').select('*')
+          .order('uploaded_at', { ascending: false }).limit(20);
+        if (error) throw new Error(error.message);
+        $('importRows').innerHTML = data.map((b) => `<tr>
+            <td>${dateIST(b.uploaded_at)} ${timeIST(b.uploaded_at)}</td>
+            <td>${escapeHtml(b.file_name || '-')}</td>
+            <td>${escapeHtml((b.showroom_ids || []).map(showroomName).join(', ') || '-')}</td>
+            <td>${b.created}</td>
+            <td>${b.skipped}</td>
+            <td>${b.failed}</td>
+            <td class="actions"><button type="button" class="secondary" data-batch="${escapeHtml(b.batch_id)}">Download log</button></td>
+          </tr>`).join('') || '<tr><td colspan="7" class="muted">No uploads yet.</td></tr>';
+        setMsg('importMsg', '');
       } catch (err) {
-        setMsg('srMsg', 'Could not load showrooms: ' + (err.message || err), false);
+        $('importRows').innerHTML = '';
+        setMsg('importMsg', 'Could not load the upload log: ' + (err.message || err), false);
       }
     }
 
+    $('importRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-batch]');
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        const lines = await fetchAll(() => db.from('import_log').select('*')
+          .eq('batch_id', btn.dataset.batch).order('id'));
+        const when = lines[0]?.created_at ? ymd(new Date(lines[0].created_at)) : todayIST();
+        downloadLog(lines, `upload_log_${when}.csv`);
+      } catch (err) {
+        setMsg('importMsg', 'Could not download the log: ' + (err.message || err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ======================= Showrooms tab =======================
+    // Address, contact and location columns for the showroom table
+    const srAddress = (s) => [s.address, [s.city, s.pincode].filter(Boolean).join(' - ')].filter(Boolean).join(', ');
+    const srContact = (s) => [s.contact_phone, s.email, s.contact_person].filter(Boolean).map(escapeHtml).join('<br>');
+
+    async function renderShowrooms() {
+      try {
+        await loadBase();
+        const list = myShowrooms();
+        $('srListTitle').textContent = isMaster() ? 'All showrooms' : 'My showrooms';
+        $('srRows').innerHTML = list.map((s) => `<tr>
+          <td><b>${s.showroom_no ?? '-'}</b></td>
+          <td><b>${escapeHtml(s.name)}</b>${s.brand ? '<br><span class="muted">' + escapeHtml(s.brand) + '</span>' : ''}</td>
+          <td class="entries">${escapeHtml(srAddress(s)) || '<span class="muted">Not entered yet</span>'}</td>
+          <td class="entries">${srContact(s) || '<span class="muted">Not entered yet</span>'}</td>
+          <td><span class="muted">${s.latitude}, ${s.longitude}</span><br>within ${s.radius_meters} m</td>
+          <td>${employees.filter((e) => e.is_active && e.showroom_id === s.id).length}</td>
+          <td class="actions">${isMaster() ? `
+            <button type="button" class="secondary" data-act="edit" data-id="${s.id}">Edit</button>
+            <button type="button" class="secondary danger" data-act="delete" data-id="${s.id}">Delete</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="7" class="muted">No showrooms yet.</td></tr>';
+        setMsg('srListMsg', '');
+        if (isMaster() && !$('srId').value && !$('srNo').value) $('srNo').value = nextShowroomNo();
+      } catch (err) {
+        setMsg('srListMsg', 'Could not load showrooms: ' + (err.message || err), false);
+      }
+    }
+
+    const nextShowroomNo = () => showrooms.reduce((max, s) => Math.max(max, s.showroom_no || 0), 0) + 1;
+
+    const SR_FIELDS = { srNo: 'showroom_no', srName: 'name', srBrand: 'brand', srAddress: 'address', srCity: 'city',
+      srPincode: 'pincode', srPhone: 'contact_phone', srEmail: 'email', srPerson: 'contact_person',
+      srLat: 'latitude', srLng: 'longitude', srRadius: 'radius_meters' };
+
     function resetShowroomForm() {
+      for (const id of Object.keys(SR_FIELDS)) $(id).value = '';
       $('srId').value = '';
-      $('srName').value = '';
-      $('srLat').value = '';
-      $('srLng').value = '';
       $('srRadius').value = '100';
+      $('srNo').value = nextShowroomNo();
       $('showroomFormTitle').textContent = 'Add a showroom';
       $('cancelSrBtn').classList.add('hidden');
     }
 
-    $('srRows').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-id]');
-      if (!btn) return;
+    $('srRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn || !isMaster()) return;
       const s = showrooms.find((x) => String(x.id) === btn.dataset.id);
       if (!s) return;
-      $('srId').value = s.id;
-      $('srName').value = s.name;
-      $('srLat').value = s.latitude;
-      $('srLng').value = s.longitude;
-      $('srRadius').value = s.radius_meters;
-      $('showroomFormTitle').textContent = 'Edit showroom: ' + s.name;
-      $('cancelSrBtn').classList.remove('hidden');
-      setMsg('srMsg', '');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      if (btn.dataset.act === 'edit') {
+        for (const [id, field] of Object.entries(SR_FIELDS)) $(id).value = s[field] ?? '';
+        $('srId').value = s.id;
+        $('showroomFormTitle').textContent = 'Edit showroom: ' + s.name;
+        $('cancelSrBtn').classList.remove('hidden');
+        setMsg('srMsg', '');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+
+      // Delete: only when nobody works there any more
+      const staff = employees.filter((x) => x.showroom_id === s.id).length;
+      if (staff) {
+        setMsg('srListMsg', `${s.name} still has ${staff} staff. Move them to another showroom (Staff tab, Edit) ` +
+          'or delete them first.', false);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const { count } = await db.from('attendance_logs').select('id', { count: 'exact', head: true }).eq('showroom_id', s.id);
+        const typed = prompt(`Delete the showroom "${s.name}"?` +
+          (count ? `\n\nIts ${count} old attendance records will be deleted too.` : '') +
+          '\nThis cannot be undone.\n\nType DELETE to confirm:');
+        if ((typed || '').trim().toUpperCase() !== 'DELETE') return;
+        await rpc('delete_showroom', { p_showroom_id: s.id });
+        await renderShowrooms();
+        setMsg('srListMsg', `${s.name} deleted.`, true);
+      } catch (err) {
+        setMsg('srListMsg', err.message || String(err), false);
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     $('cancelSrBtn').addEventListener('click', resetShowroomForm);
 
     $('saveSrBtn').addEventListener('click', async () => {
+      const email = $('srEmail').value.trim();
+      if (email && !looksLikeEmail(email)) return setMsg('srMsg', 'The email ID does not look right.', false);
       $('saveSrBtn').disabled = true;
       try {
         const editing = $('srId').value !== '';
-        await rpc('admin_save_showroom', {
-          p_id: editing ? Number($('srId').value) : null,
-          p_name: $('srName').value,
-          p_latitude: parseFloat($('srLat').value),
-          p_longitude: parseFloat($('srLng').value),
-          p_radius_meters: parseInt($('srRadius').value, 10),
-        });
+        if (needsSql10) {
+          // Before 10_roles_and_showrooms.sql: only name and location can be saved
+          await rpc('admin_save_showroom', {
+            p_id: editing ? Number($('srId').value) : null,
+            p_name: $('srName').value,
+            p_latitude: parseFloat($('srLat').value),
+            p_longitude: parseFloat($('srLng').value),
+            p_radius_meters: parseInt($('srRadius').value, 10),
+          });
+        } else {
+          await rpc('save_showroom', {
+            p_id: editing ? Number($('srId').value) : null,
+            p_showroom_no: parseInt($('srNo').value, 10) || null,
+            p_name: $('srName').value,
+            p_brand: $('srBrand').value,
+            p_address: $('srAddress').value,
+            p_city: $('srCity').value,
+            p_pincode: $('srPincode').value,
+            p_contact_phone: $('srPhone').value,
+            p_email: email,
+            p_contact_person: $('srPerson').value,
+            p_latitude: parseFloat($('srLat').value),
+            p_longitude: parseFloat($('srLng').value),
+            p_radius_meters: parseInt($('srRadius').value, 10),
+          });
+        }
         setMsg('srMsg', editing ? 'Showroom updated.' : 'Showroom added.', true);
-        resetShowroomForm();
+        $('srId').value = '';
         await renderShowrooms();
+        resetShowroomForm();
       } catch (err) {
         setMsg('srMsg', err.message || String(err), false);
       } finally {
         $('saveSrBtn').disabled = false;
+      }
+    });
+
+    // ======================= HR logins tab (master admin only) =======================
+    let hrUsers = [];
+
+    function drawHrChecks(checkedIds) {
+      $('hrShowroomChecks').innerHTML = showrooms.map((s) => `<label class="check">
+          <input type="checkbox" value="${s.id}"${checkedIds.includes(s.id) ? ' checked' : ''}>
+          ${s.showroom_no ? s.showroom_no + ' · ' : ''}${escapeHtml(s.name)}</label>`).join('')
+        || '<span class="muted">Add a showroom first (Showrooms tab).</span>';
+    }
+    const checkedHrShowrooms = () => [...document.querySelectorAll('#hrShowroomChecks input:checked')].map((c) => Number(c.value));
+
+    async function renderUsers() {
+      if (!isMaster()) return;
+      if (needsSql10) {
+        $('hrRows').innerHTML = '';
+        return setMsg('hrListMsg', 'Run 10_roles_and_showrooms.sql in Supabase first (see the red box at the top).', false);
+      }
+      try {
+        await loadBase();
+        drawHrChecks(checkedHrShowrooms());
+        const { data, error } = await db.from('hr_users')
+          .select('user_id, full_name, login_email, mobile, hr_showrooms(showroom_id)').order('full_name');
+        if (error) throw new Error(error.message);
+        hrUsers = data;
+        $('hrRows').innerHTML = data.map((u) => `<tr>
+            <td><b>${escapeHtml(u.full_name)}</b></td>
+            <td>${escapeHtml(u.login_email)}</td>
+            <td>${escapeHtml(u.mobile || '-')}</td>
+            <td class="entries">${escapeHtml(u.hr_showrooms.map((h) => showroomName(h.showroom_id)).join(', ') || '-')}</td>
+            <td class="actions">
+              <button type="button" class="secondary" data-act="edit" data-id="${u.user_id}">Edit / new password</button>
+              <button type="button" class="secondary danger" data-act="delete" data-id="${u.user_id}">Delete</button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">No HR logins yet.</td></tr>';
+        setMsg('hrListMsg', '');
+      } catch (err) {
+        setMsg('hrListMsg', 'Could not load HR logins: ' + (err.message || err), false);
+      }
+    }
+
+    function resetHrForm() {
+      for (const id of ['hrUserId', 'hrName', 'hrLogin', 'hrMobile', 'hrPassword']) $(id).value = '';
+      $('hrLogin').disabled = false;
+      $('hrFormTitle').textContent = 'Add an HR login';
+      $('hrPasswordLabel').textContent = 'Password * (8 or more characters)';
+      $('saveHrBtn').textContent = 'Add HR login';
+      $('cancelHrBtn').classList.add('hidden');
+      drawHrChecks([]);
+    }
+    $('cancelHrBtn').addEventListener('click', resetHrForm);
+
+    $('hrRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const u = hrUsers.find((x) => x.user_id === btn.dataset.id);
+      if (!u) return;
+      if (btn.dataset.act === 'edit') {
+        $('hrUserId').value = u.user_id;
+        $('hrName').value = u.full_name;
+        $('hrLogin').value = u.login_email;
+        $('hrLogin').disabled = true; // the login itself cannot be changed; delete and add again instead
+        $('hrMobile').value = u.mobile || '';
+        $('hrPassword').value = '';
+        $('hrPasswordLabel').textContent = 'New password (leave empty to keep the current one)';
+        $('hrFormTitle').textContent = 'Edit HR login: ' + u.full_name;
+        $('saveHrBtn').textContent = 'Save changes';
+        $('cancelHrBtn').classList.remove('hidden');
+        drawHrChecks(u.hr_showrooms.map((h) => h.showroom_id));
+        setMsg('hrMsg', '');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      if (!confirm(`Delete the HR login of ${u.full_name} (${u.login_email})?\n\nThey will no longer be able to log in ` +
+                   'to this dashboard. Staff and attendance are not affected.')) return;
+      btn.disabled = true;
+      try {
+        await callAdminUsers({ action: 'delete_hr', user_id: u.user_id });
+        await renderUsers();
+        setMsg('hrListMsg', `HR login of ${u.full_name} deleted.`, true);
+      } catch (err) {
+        setMsg('hrListMsg', err.message || String(err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $('saveHrBtn').addEventListener('click', async () => {
+      const editing = $('hrUserId').value !== '';
+      const name = $('hrName').value.trim();
+      const login = $('hrLogin').value.trim().toLowerCase();
+      const password = $('hrPassword').value;
+      const ids = checkedHrShowrooms();
+      if (!name) return setMsg('hrMsg', 'Please enter the name.', false);
+      if (!editing && !looksLikeEmail(login)) return setMsg('hrMsg', 'The login must look like an email, for example hr.omr@pillaimotors.in', false);
+      if ((!editing || password) && password.length < 8) return setMsg('hrMsg', 'The password must have at least 8 characters.', false);
+      if (!ids.length) return setMsg('hrMsg', 'Please tick at least one showroom.', false);
+
+      $('saveHrBtn').disabled = true;
+      setMsg('hrMsg', 'Saving…', true);
+      try {
+        if (editing) {
+          await callAdminUsers({ action: 'update_hr', user_id: $('hrUserId').value, full_name: name,
+            mobile: $('hrMobile').value, showroom_ids: ids, new_password: password });
+          setMsg('hrMsg', `Saved.${password ? ` New password for ${login}: ${password}` : ''}`, true);
+        } else {
+          await callAdminUsers({ action: 'create_hr', full_name: name, login_email: login,
+            mobile: $('hrMobile').value, password, showroom_ids: ids });
+          setMsg('hrMsg', `HR login added. Send them the dashboard link ${location.href.split('#')[0]} ` +
+            `with login ${login} and password ${password}`, true);
+        }
+        const keep = $('hrMsg').textContent;
+        resetHrForm();
+        setMsg('hrMsg', keep, true);
+        await renderUsers();
+      } catch (err) {
+        setMsg('hrMsg', err.message || String(err), false);
+      } finally {
+        $('saveHrBtn').disabled = false;
       }
     });
 
@@ -1035,6 +1642,7 @@
 
     // ======================= Tabs =======================
     function showTab(tab) {
+      if (!isMaster() && (tab === 'users' || tab === 'settings')) tab = 'attendance';
       currentTab = tab;
       for (const t of TABS) $('tab-' + t).classList.toggle('hidden', t !== tab);
       document.querySelectorAll('nav.tabs button').forEach((b) =>
@@ -1042,6 +1650,7 @@
       if (tab === 'attendance') refresh();
       if (tab === 'staff') renderStaff();
       if (tab === 'showrooms') renderShowrooms();
+      if (tab === 'users') renderUsers();
       if (tab === 'settings') loadSettings();
     }
 
@@ -1056,16 +1665,44 @@
       $('loginError').textContent = message || '';
     }
 
+    // Master admin or HR (with their showrooms)? Works before 10_roles_and_showrooms.sql too (master admin only).
+    async function loadAccess() {
+      const { data, error } = await db.rpc('get_my_access');
+      if (!error && data) {
+        needsSql10 = false;
+        return { role: data.role, name: data.name, showroom_ids: (data.showroom_ids || []).map(Number) };
+      }
+      const { data: isAdmin, error: adminError } = await db.rpc('is_admin');
+      if (adminError) throw new Error(adminError.message);
+      needsSql10 = true;
+      return { role: isAdmin ? 'master' : 'none', showroom_ids: [] };
+    }
+
     async function showApp() {
-      const { data: isAdmin, error } = await db.rpc('is_admin');
-      if (error || !isAdmin) {
+      let found;
+      try {
+        found = await loadAccess();
+      } catch (err) {
         await db.auth.signOut();
-        showLogin(error ? 'Could not check admin access: ' + error.message
-                        : 'This account is not an admin.');
+        showLogin('Could not check access: ' + (err.message || err));
         return;
       }
+      if (found.role === 'none') {
+        await db.auth.signOut();
+        showLogin('This login has no access to the dashboard. Staff use the phone app instead.');
+        return;
+      }
+      access = found;
       const { data: { user } } = await db.auth.getUser();
-      $('who').textContent = user?.email || '';
+      document.querySelectorAll('[data-master-only]').forEach((el) => el.classList.toggle('hidden', !isMaster()));
+      $('setupNotice').classList.toggle('hidden', !(needsSql10 && isMaster()));
+      try {
+        await loadBase();
+      } catch (err) {
+        $('appError').textContent = 'Could not load: ' + (err.message || err);
+      }
+      $('who').textContent = (user?.email || '') + ' · ' + (isMaster() ? 'Master admin'
+        : 'HR: ' + (myShowrooms().map((s) => s.name).join(', ') || 'no showroom yet'));
       $('loginView').classList.add('hidden');
       $('appView').classList.remove('hidden');
 
