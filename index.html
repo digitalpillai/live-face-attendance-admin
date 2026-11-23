@@ -1,7 +1,8 @@
 <!doctype html>
-<!-- index.html | Version: V2
+<!-- index.html | Version: V3
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
+     V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -224,6 +225,23 @@
       <div style="flex:0 0 auto"><button id="closeEmpBtn" type="button" class="secondary">Cancel</button></div>
     </div>
     <div id="empMsg" class="msg"></div>
+  </dialog>
+
+  <!-- ---------- Set password pop-up ---------- -->
+  <dialog id="pwDialog">
+    <h2>Set a new password</h2>
+    <p id="pwFor" class="muted"></p>
+    <input id="pwEmpId" type="hidden">
+    <label for="pwNew">New password (at least 6 characters)</label>
+    <input id="pwNew" type="password" autocomplete="new-password">
+    <label class="check"><input id="pwShow" type="checkbox"> Show password</label>
+    <p class="muted">Leave it empty to use their mobile number as the password.
+      Tell the employee their new password. They can change it themselves in the app (My account).</p>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 auto"><button id="savePwBtn" type="button">Set password</button></div>
+      <div style="flex:0 0 auto"><button id="closePwBtn" type="button" class="secondary">Cancel</button></div>
+    </div>
+    <div id="pwMsg" class="msg"></div>
   </dialog>
 
   <script>
@@ -553,6 +571,10 @@
         openEmployeeDialog(emp);
         return;
       }
+      if (btn.dataset.act === 'password') {
+        openPasswordDialog(emp);
+        return;
+      }
       btn.disabled = true;
       try {
         if (btn.dataset.act === 'face') {
@@ -560,10 +582,6 @@
                        '(in front of the manager) before they can check in.')) return;
           await rpc('admin_reset_face', { p_employee_id: emp.id });
           setMsg('staffMsg', `Face reset for ${emp.full_name}. They can register again in the app.`, true);
-        } else if (btn.dataset.act === 'password') {
-          if (!confirm(`Reset the password of ${emp.full_name} back to their mobile number (${emp.phone})?`)) return;
-          await callAdminUsers({ action: 'reset_password', employee_id: emp.id });
-          setMsg('staffMsg', `The password for ${emp.full_name} is now their mobile number.`, true);
         }
         await renderStaff();
       } catch (err) {
@@ -600,6 +618,55 @@
         setMsg('empMsg', err.message || String(err), false);
       } finally {
         $('saveEmpBtn').disabled = false;
+      }
+    });
+
+    // Set a new password for an employee (empty = their mobile number)
+    function openPasswordDialog(emp) {
+      $('pwEmpId').value = emp.id;
+      $('pwFor').textContent = `${emp.full_name} (username ${emp.phone})`;
+      $('pwNew').value = '';
+      $('pwNew').type = 'password';
+      $('pwShow').checked = false;
+      setMsg('pwMsg', '');
+      $('pwDialog').showModal();
+    }
+
+    $('pwShow').addEventListener('change', () => {
+      $('pwNew').type = $('pwShow').checked ? 'text' : 'password';
+    });
+
+    $('closePwBtn').addEventListener('click', () => $('pwDialog').close());
+
+    $('savePwBtn').addEventListener('click', async () => {
+      const emp = employees.find((x) => String(x.id) === $('pwEmpId').value);
+      const newPassword = $('pwNew').value.trim();
+      if (newPassword && newPassword.length < 6) {
+        setMsg('pwMsg', 'The password must have at least 6 characters.', false);
+        return;
+      }
+      $('savePwBtn').disabled = true;
+      try {
+        const result = await callAdminUsers({
+          action: 'reset_password',
+          employee_id: Number($('pwEmpId').value),
+          new_password: newPassword,
+        });
+        // The old (V1) function ignores the typed password and always uses the mobile number
+        const usedMobile = result?.used_mobile_number !== false;
+        $('pwDialog').close();
+        if (newPassword && newPassword !== emp?.phone && usedMobile) {
+          setMsg('staffMsg', `The password for ${emp?.full_name} was set to their mobile number, ` +
+            'not the one you typed. Please update the admin-users function in Supabase to V2, then try again.', false);
+        } else {
+          setMsg('staffMsg', usedMobile
+            ? `The password for ${emp?.full_name} is now their mobile number.`
+            : `New password set for ${emp?.full_name}. Please tell them their new password.`, true);
+        }
+      } catch (err) {
+        setMsg('pwMsg', err.message || String(err), false);
+      } finally {
+        $('savePwBtn').disabled = false;
       }
     });
 
