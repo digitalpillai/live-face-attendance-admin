@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- index.html | Version: V7
+<!-- index.html | Version: V8
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
@@ -16,6 +16,9 @@
          phones meet: no GPS, face not matching, errors, freezes, crashes) and Support tab (reports sent with the
          app's "Send logs" button), both with "Copy for Claude". HR see only their own showrooms.
          An "Activity" button on each staff row. Needs 11_activity_and_support.sql.
+     V8: Reports tab: monthly register (P, Late, Half day, Absent, Week off, Holiday, paid days), monthly summary,
+         late and early report, staff list; on screen and as Excel. Holidays list. Default working hours in Settings,
+         own hours per showroom, weekly off per employee (Staff tab). Needs 12_reports_and_hours.sql.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -94,6 +97,18 @@
     pre.report { max-height: 55vh; overflow: auto; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px;
                  font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
     nav.tabs .badge { margin-left: 4px; }
+    table.register th, table.register td { padding: 5px 6px; text-align: center; font-size: 12px; }
+    table.register th { text-transform: none; letter-spacing: 0; }
+    table.register th:first-child, table.register td:first-child { position: sticky; left: 0; background: var(--card);
+      text-align: left; z-index: 1; box-shadow: 1px 0 0 var(--border); }
+    table.register td.c-P { background: var(--green-bg); color: var(--green); font-weight: 600; }
+    table.register td.c-L { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
+    table.register td.c-HD { background: #fef9c3; color: #854d0e; font-weight: 600; }
+    table.register td.c-A { background: var(--red-bg); color: var(--red); font-weight: 600; }
+    table.register td.c-WO, table.register td.c-H { background: var(--grey-bg); color: var(--muted); }
+    table.register th.wk { color: var(--red); }
+    table.register td.tot { font-weight: 600; background: #f8fafc; }
+    select.wo-select { width: auto; padding: 4px 6px; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -123,6 +138,7 @@
     </header>
     <nav class="tabs">
       <button type="button" data-tab="attendance" class="active">Attendance</button>
+      <button type="button" data-tab="reports">Reports</button>
       <button type="button" data-tab="activity">Activity</button>
       <button type="button" data-tab="support">Support <span id="supportCount" class="badge b-red hidden"></span></button>
       <button type="button" data-tab="staff">Staff</button>
@@ -140,6 +156,10 @@
 
     <main id="sql11Notice" class="hidden" style="padding-bottom:0">
       <div class="card" style="border-color:var(--red)" id="sql11Text"></div>
+    </main>
+
+    <main id="sql12Notice" class="hidden" style="padding-bottom:0">
+      <div class="card" style="border-color:var(--red)" id="sql12Text"></div>
     </main>
 
     <!-- ---------- Attendance ---------- -->
@@ -181,6 +201,59 @@
         </div>
         <p class="muted">One row per employee per day, for the showroom selected above.
           Opens in Excel or Google Sheets. Up to 3 months at a time.</p>
+      </div>
+    </main>
+
+    <!-- ---------- Reports ---------- -->
+    <main id="tab-reports" class="hidden">
+      <div class="card">
+        <div class="row">
+          <div style="flex:2 1 280px"><label for="rptType">Report</label>
+            <select id="rptType">
+              <option value="register">Monthly register (P, Late, Half day, Absent, Week off, Holiday)</option>
+              <option value="summary">Monthly summary per employee</option>
+              <option value="late">Late and early report</option>
+              <option value="staff">Staff list</option>
+            </select></div>
+          <div id="rptMonthBox"><label for="rptMonth">Month</label><input id="rptMonth" type="month"></div>
+          <div><label for="rptShowroom">Showroom</label><select id="rptShowroom"></select></div>
+          <div style="flex:0 0 auto"><button id="rptShowBtn" type="button">Show</button></div>
+          <div style="flex:0 0 auto"><button id="rptExcelBtn" type="button" class="secondary" disabled>Download Excel</button></div>
+        </div>
+        <div id="rptMsg" class="msg"></div>
+      </div>
+
+      <div class="chips" id="rptChips"></div>
+
+      <div class="card">
+        <h2 id="rptTitle">Report</h2>
+        <p id="rptSub" class="muted"></p>
+        <div class="table-wrap">
+          <table id="rptTable">
+            <thead id="rptHead"></thead>
+            <tbody id="rptBody"></tbody>
+          </table>
+        </div>
+        <p id="rptLegend" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2 id="holTitle">Holidays</h2>
+        <div class="row">
+          <div><label for="holDate">Date</label><input id="holDate" type="date"></div>
+          <div style="flex:2 1 240px"><label for="holName">Holiday name</label><input id="holName" type="text" placeholder="e.g. Pongal"></div>
+          <div><label for="holShowroom">For</label><select id="holShowroom"></select></div>
+          <div style="flex:0 0 auto"><button id="holAddBtn" type="button">Add holiday</button></div>
+        </div>
+        <div id="holMsg" class="msg"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Holiday</th><th>For</th><th></th></tr></thead>
+            <tbody id="holRows"></tbody>
+          </table>
+        </div>
+        <p class="muted">Holidays show as H in the register and are not counted as absent. The master admin can add
+          holidays for all showrooms; HR can add holidays for their own showrooms.</p>
       </div>
     </main>
 
@@ -273,6 +346,7 @@
         <div class="row">
           <div><label for="newCode">Employee code</label><input id="newCode" type="text"></div>
           <div><label for="newEmail">Email ID</label><input id="newEmail" type="email"></div>
+          <div><label for="newWeeklyOff">Weekly off</label><select id="newWeeklyOff"></select></div>
           <div style="flex:0 0 auto"><button id="addEmpBtn" type="button">Add employee</button></div>
         </div>
         <p class="muted">* required. They log in to the app with their mobile number. Their first password is also their mobile number.</p>
@@ -326,11 +400,12 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Employee</th><th>Designation</th><th>Showroom</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Employee</th><th>Designation</th><th>Showroom</th><th>Weekly off</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="staffRows"></tbody>
           </table>
         </div>
-        <p class="muted">Staff who leave: click Edit and untick "Active". Their attendance history is kept.</p>
+        <p class="muted">Staff who leave: click Edit and untick "Active". Their attendance history is kept.
+          Weekly off: choose the day in the list; it is saved at once and used in the monthly register.</p>
       </div>
     </main>
 
@@ -362,6 +437,11 @@
           <div><label for="srLat">Latitude *</label><input id="srLat" type="number" step="any"></div>
           <div><label for="srLng">Longitude *</label><input id="srLng" type="number" step="any"></div>
           <div><label for="srRadius">Allowed distance (metres) *</label><input id="srRadius" type="number" value="100" min="20" max="2000"></div>
+        </div>
+        <div class="row">
+          <div><label for="srOpen">Opens at (empty = default hours)</label><input id="srOpen" type="time"></div>
+          <div><label for="srClose">Closes at (empty = default hours)</label><input id="srClose" type="time"></div>
+          <div style="flex:2 1 300px"><p class="muted" id="srHoursHint" style="margin:0 0 10px"></p></div>
         </div>
         <div class="row" style="margin-top:12px">
           <div style="flex:0 0 auto"><button id="saveSrBtn" type="button">Save showroom</button></div>
@@ -428,6 +508,21 @@
           lower it a little. If a wrong person ever gets through, raise it.</p>
         <button id="saveThresholdBtn" type="button">Save</button>
         <div id="settingsMsg" class="msg"></div>
+      </div>
+      <div class="card" style="max-width:560px">
+        <h2>Working hours (default for all showrooms)</h2>
+        <div class="row">
+          <div><label for="wsStart">Opens at</label><input id="wsStart" type="time"></div>
+          <div><label for="wsEnd">Closes at</label><input id="wsEnd" type="time"></div>
+        </div>
+        <div class="row">
+          <div><label for="wsGrace">Grace time (minutes)</label><input id="wsGrace" type="number" min="0" max="120" step="1"></div>
+          <div><label for="wsHalf">Half day if worked less than (hours)</label><input id="wsHalf" type="number" min="0.5" max="12" step="0.5"></div>
+        </div>
+        <p class="muted">Late = checked in more than the grace time after opening. Left early = checked out more than the
+          grace time before closing. A showroom can have its own hours (Showrooms tab, Edit).</p>
+        <button id="saveHoursBtn" type="button">Save working hours</button>
+        <div id="hoursMsg" class="msg"></div>
       </div>
     </main>
   </div>
@@ -505,7 +600,7 @@
 
     const $ = (id) => document.getElementById(id);
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const TABS = ['attendance', 'activity', 'support', 'staff', 'showrooms', 'users', 'settings'];
+    const TABS = ['attendance', 'reports', 'activity', 'support', 'staff', 'showrooms', 'users', 'settings'];
     let currentTab = 'attendance';
     let showrooms = [];
     let employees = [];
@@ -596,27 +691,40 @@
         .order('logged_at', { ascending: true }));
     }
 
-    // Employees, page by page (there can be more than 1000). Works before 09_employee_details.sql is run too.
+    // Employees, page by page (there can be more than 1000). Works before 09 and 12 are run too.
     let needsSql09 = false;
+    let needsSql12 = false; // true until 12_reports_and_hours.sql has been run
     async function loadEmployees() {
       const base = 'id, full_name, phone, is_active, showroom_id, face_registered_at';
+      const details = ', employee_code, designation, email'; // 09_employee_details.sql
+      const reports = ', weekly_off, created_at';           // 12_reports_and_hours.sql
+      const read = (columns) => fetchAll(() => db.from('employees').select(columns).order('id'));
       try {
-        const rows = await fetchAll(() => db.from('employees')
-          .select(base + ', employee_code, designation, email').order('id'));
+        const rows = await read(base + details + reports);
         needsSql09 = false;
+        needsSql12 = false;
         return rows;
       } catch (err) {
         if (err.code !== '42703') throw err; // 42703 = the new columns do not exist yet
+      }
+      needsSql12 = true;
+      try {
+        const rows = await read(base + details);
+        needsSql09 = false;
+        return rows;
+      } catch (err) {
+        if (err.code !== '42703') throw err;
         needsSql09 = true;
-        return fetchAll(() => db.from('employees').select(base).order('id'));
+        return read(base);
       }
     }
 
-    // Showrooms with their details (number, address, contact); works before 10_roles_and_showrooms.sql too
+    // Showrooms with their details (number, address, contact, hours); works before 10 and 12 are run too
     async function loadShowrooms() {
       const base = 'id, name, latitude, longitude, radius_meters';
-      let res = await db.from('showrooms')
-        .select(base + ', showroom_no, brand, address, city, pincode, contact_phone, email, contact_person').order('name');
+      const details = ', showroom_no, brand, address, city, pincode, contact_phone, email, contact_person';
+      let res = await db.from('showrooms').select(base + details + ', work_start, work_end').order('name');
+      if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base + details).order('name');
       if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base).order('name');
       if (res.error) throw res.error;
       return res.data.sort((a, b) => (a.showroom_no ?? 1e9) - (b.showroom_no ?? 1e9) || a.name.localeCompare(b.name));
@@ -627,6 +735,23 @@
       showrooms = srs;
       employees = emps.sort((a, b) => a.full_name.localeCompare(b.full_name));
       $('sqlNotice').classList.toggle('hidden', !needsSql09);
+      showSql12Notice();
+
+      // Showroom filter on the Reports tab, and the "For" list of holidays
+      const rptSr = $('rptShowroom');
+      const currentRpt = rptSr.value;
+      rptSr.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
+      rptSr.value = currentRpt;
+      const holSr = $('holShowroom');
+      const currentHol = holSr.value;
+      holSr.innerHTML = (isMaster() ? '<option value="">All showrooms</option>' : '') + showroomOptions();
+      holSr.value = currentHol;
+      if (!holSr.value && holSr.options.length) holSr.selectedIndex = 0;
+
+      // Weekly off choice in "Add an employee"
+      const newWo = $('newWeeklyOff');
+      if (!newWo.options.length) newWo.innerHTML = weeklyOffOptions(null);
+      newWo.disabled = needsSql12;
 
       // Showroom filter on the Attendance tab
       const filter = $('showroom');
@@ -834,6 +959,8 @@
             emp.employee_code ? ' · Code ' + escapeHtml(emp.employee_code) : ''}</span></td>
           <td>${escapeHtml(emp.designation || '-')}</td>
           <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
+          <td>${needsSql12 ? '<span class="muted">-</span>'
+              : `<select class="wo-select" data-id="${emp.id}" aria-label="Weekly off">${weeklyOffOptions(emp.weekly_off)}</select>`}</td>
           <td>${emp.face_registered_at
               ? '<span class="badge b-green">Registered</span><br><span class="muted">' + dateIST(emp.face_registered_at) + '</span>'
               : '<span class="badge b-orange">Not registered</span>'}</td>
@@ -845,9 +972,29 @@
             <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>
             ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}
           </td>
-        </tr>`).join('') || `<tr><td colspan="6" class="muted">${employees.length ? 'Nobody matches the search.' : 'No staff yet.'}</td></tr>`;
+        </tr>`).join('') || `<tr><td colspan="7" class="muted">${employees.length ? 'Nobody matches the search.' : 'No staff yet.'}</td></tr>`;
     }
     $('staffSearch').addEventListener('input', drawStaff);
+
+    // Weekly off: saved as soon as a day is chosen
+    $('staffRows').addEventListener('change', async (e) => {
+      const sel = e.target.closest('select.wo-select');
+      if (!sel) return;
+      const emp = employees.find((x) => String(x.id) === sel.dataset.id);
+      if (!emp) return;
+      const day = sel.value === '' ? null : Number(sel.value);
+      sel.disabled = true;
+      try {
+        await rpc('set_weekly_off', { p_employee_id: emp.id, p_weekly_off: day });
+        emp.weekly_off = day;
+        setMsg('staffMsg', `Weekly off of ${emp.full_name}: ${day === null ? 'none' : DAY_NAMES[day]}.`, true);
+      } catch (err) {
+        sel.value = emp.weekly_off ?? '';
+        setMsg('staffMsg', err.message || String(err), false);
+      } finally {
+        sel.disabled = false;
+      }
+    });
 
     const looksLikeEmail = (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
 
@@ -872,9 +1019,20 @@
           action: 'create', full_name: name, phone, showroom_id: showroomId,
           designation, employee_code: code, email,
         });
-        setMsg('staffMsg', `${name} added. Their login and first password: ${phone}`, true);
-        for (const id of ['newName', 'newPhone', 'newDesignation', 'newCode', 'newEmail']) $(id).value = '';
+        let note = '';
+        const weeklyOff = $('newWeeklyOff').value;
+        if (weeklyOff !== '' && !needsSql12) {
+          try {
+            await loadBase();
+            const added = employees.find((x) => x.phone === phone);
+            if (added) await rpc('set_weekly_off', { p_employee_id: added.id, p_weekly_off: Number(weeklyOff) });
+          } catch (err) {
+            note = ' The weekly off could not be saved: ' + (err.message || err);
+          }
+        }
+        for (const id of ['newName', 'newPhone', 'newDesignation', 'newCode', 'newEmail', 'newWeeklyOff']) $(id).value = '';
         await renderStaff();
+        setMsg('staffMsg', `${name} added. Their login and first password: ${phone}.${note}`, !note);
       } catch (err) {
         setMsg('staffMsg', err.message || String(err), false);
       } finally {
@@ -1511,7 +1669,8 @@
           <td><b>${escapeHtml(s.name)}</b>${s.brand ? '<br><span class="muted">' + escapeHtml(s.brand) + '</span>' : ''}</td>
           <td class="entries">${escapeHtml(srAddress(s)) || '<span class="muted">Not entered yet</span>'}</td>
           <td class="entries">${srContact(s) || '<span class="muted">Not entered yet</span>'}</td>
-          <td><span class="muted">${s.latitude}, ${s.longitude}</span><br>within ${s.radius_meters} m</td>
+          <td><span class="muted">${s.latitude}, ${s.longitude}</span><br>within ${s.radius_meters} m${
+            needsSql12 ? '' : '<br><span class="muted">Hours: ' + escapeHtml(hoursText(s)) + '</span>'}</td>
           <td>${employees.filter((e) => e.is_active && e.showroom_id === s.id).length}</td>
           <td class="actions">${isMaster() ? `
             <button type="button" class="secondary" data-act="edit" data-id="${s.id}">Edit</button>
@@ -1519,6 +1678,9 @@
         </tr>`).join('') || '<tr><td colspan="7" class="muted">No showrooms yet.</td></tr>';
         setMsg('srListMsg', '');
         if (isMaster() && !$('srId').value && !$('srNo').value) $('srNo').value = nextShowroomNo();
+        if (!needsSql12) await loadWorkSettings().catch(() => {});
+        $('srHoursHint').textContent = needsSql12 ? 'Working hours need 12_reports_and_hours.sql.'
+          : `Default hours: ${minText(toMin(workSettings.work_start))} to ${minText(toMin(workSettings.work_end))} (Settings tab).`;
       } catch (err) {
         setMsg('srListMsg', 'Could not load showrooms: ' + (err.message || err), false);
       }
@@ -1532,6 +1694,8 @@
 
     function resetShowroomForm() {
       for (const id of Object.keys(SR_FIELDS)) $(id).value = '';
+      $('srOpen').value = '';
+      $('srClose').value = '';
       $('srId').value = '';
       $('srRadius').value = '100';
       $('srNo').value = nextShowroomNo();
@@ -1547,6 +1711,8 @@
 
       if (btn.dataset.act === 'edit') {
         for (const [id, field] of Object.entries(SR_FIELDS)) $(id).value = s[field] ?? '';
+        $('srOpen').value = (s.work_start || '').slice(0, 5);
+        $('srClose').value = (s.work_end || '').slice(0, 5);
         $('srId').value = s.id;
         $('showroomFormTitle').textContent = 'Edit showroom: ' + s.name;
         $('cancelSrBtn').classList.remove('hidden');
@@ -1584,6 +1750,10 @@
     $('saveSrBtn').addEventListener('click', async () => {
       const email = $('srEmail').value.trim();
       if (email && !looksLikeEmail(email)) return setMsg('srMsg', 'The email ID does not look right.', false);
+      const open = $('srOpen').value;
+      const close = $('srClose').value;
+      if (!open !== !close) return setMsg('srMsg', 'Enter both the opening and the closing time, or leave both empty to use the default hours.', false);
+      if (open && close <= open) return setMsg('srMsg', 'The closing time must be after the opening time.', false);
       $('saveSrBtn').disabled = true;
       try {
         const editing = $('srId').value !== '';
@@ -1597,7 +1767,7 @@
             p_radius_meters: parseInt($('srRadius').value, 10),
           });
         } else {
-          await rpc('save_showroom', {
+          const savedId = await rpc('save_showroom', {
             p_id: editing ? Number($('srId').value) : null,
             p_showroom_no: parseInt($('srNo').value, 10) || null,
             p_name: $('srName').value,
@@ -1612,6 +1782,13 @@
             p_longitude: parseFloat($('srLng').value),
             p_radius_meters: parseInt($('srRadius').value, 10),
           });
+          if (!needsSql12) {
+            await rpc('save_showroom_hours', {
+              p_showroom_id: Number(savedId ?? $('srId').value),
+              p_work_start: open || null,
+              p_work_end: close || null,
+            });
+          }
         }
         setMsg('srMsg', editing ? 'Showroom updated.' : 'Showroom added.', true);
         $('srId').value = '';
@@ -1754,7 +1931,41 @@
       } catch (err) {
         setMsg('settingsMsg', 'Could not load settings: ' + (err.message || err), false);
       }
+      try {
+        await loadWorkSettings();
+        $('wsStart').value = String(workSettings.work_start).slice(0, 5);
+        $('wsEnd').value = String(workSettings.work_end).slice(0, 5);
+        $('wsGrace').value = workSettings.grace_minutes;
+        $('wsHalf').value = workSettings.half_day_hours;
+        $('saveHoursBtn').disabled = needsSql12;
+        setMsg('hoursMsg', needsSql12 ? 'Run 12_reports_and_hours.sql in Supabase first (see the red box at the top).' : '', false);
+        showSql12Notice();
+      } catch (err) {
+        setMsg('hoursMsg', 'Could not load working hours: ' + (err.message || err), false);
+      }
     }
+
+    $('saveHoursBtn').addEventListener('click', async () => {
+      const start = $('wsStart').value;
+      const end = $('wsEnd').value;
+      if (!start || !end) return setMsg('hoursMsg', 'Please enter the opening and closing time.', false);
+      $('saveHoursBtn').disabled = true;
+      try {
+        await rpc('save_work_settings', {
+          p_work_start: start,
+          p_work_end: end,
+          p_grace_minutes: parseInt($('wsGrace').value, 10),
+          p_half_day_hours: parseFloat($('wsHalf').value),
+        });
+        await loadWorkSettings();
+        setMsg('hoursMsg', `Saved: ${minText(toMin(start))} to ${minText(toMin(end))}, grace ${workSettings.grace_minutes} min, ` +
+          `half day under ${workSettings.half_day_hours} h.`, true);
+      } catch (err) {
+        setMsg('hoursMsg', err.message || String(err), false);
+      } finally {
+        $('saveHoursBtn').disabled = false;
+      }
+    });
 
     $('saveThresholdBtn').addEventListener('click', async () => {
       const value = parseFloat($('threshold').value);
@@ -1766,6 +1977,511 @@
         setMsg('settingsMsg', err.message || String(err), false);
       } finally {
         $('saveThresholdBtn').disabled = false;
+      }
+    });
+
+    // ======================= Reports, working hours, weekly offs, holidays (12_reports_and_hours.sql) ==========
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+      'October', 'November', 'December'];
+    let workSettings = { work_start: '09:30:00', work_end: '19:30:00', grace_minutes: 10, half_day_hours: 4 };
+    let reportData = null; // the report on screen; also used for the Excel file
+
+    const weeklyOffOptions = (selected) => '<option value="">None</option>' +
+      DAY_NAMES.map((d, i) => `<option value="${i}"${selected === i ? ' selected' : ''}>${d}</option>`).join('');
+    const toMin = (t) => { const [h, m] = String(t || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
+    const minText = (min) => {                     // 570 -> "9:30 AM"
+      const h = Math.floor(min / 60) % 24;
+      return `${h % 12 || 12}:${String(min % 60).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+    };
+    const istMin = (iso) => {                      // minutes after midnight, Indian time
+      const d = new Date(new Date(iso).getTime() + 330 * 60000);
+      return d.getUTCHours() * 60 + d.getUTCMinutes();
+    };
+    const hm = (min) => `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`;
+    const weekdayOf = (date) => new Date(date + 'T00:00:00Z').getUTCDay(); // 0 = Sunday
+    const decimalHours = (min) => Math.round((min / 60) * 100) / 100;
+    const srNo = (id) => showrooms.find((x) => x.id === id)?.showroom_no ?? 1e9;
+    const byShowroomThenName = (a, b) => srNo(a.showroom_id) - srNo(b.showroom_id) || a.full_name.localeCompare(b.full_name);
+
+    // Working hours of a showroom: its own, or the default
+    function shiftOf(showroomId) {
+      const s = showrooms.find((x) => x.id === showroomId);
+      const own = !!(s && s.work_start && s.work_end);
+      return {
+        start: toMin(own ? s.work_start : workSettings.work_start),
+        end: toMin(own ? s.work_end : workSettings.work_end),
+        own,
+      };
+    }
+    const hoursText = (s) => {
+      const sh = shiftOf(s.id);
+      return `${minText(sh.start)} to ${minText(sh.end)}${sh.own ? '' : ' (default)'}`;
+    };
+
+    function showSql12Notice() {
+      $('sql12Text').innerHTML = isMaster()
+        ? '<b>One step is missing in Supabase.</b> Run <b>12_reports_and_hours.sql</b> in Supabase (SQL Editor) to switch on ' +
+          'the reports, working hours, weekly offs and holidays. Then press Ctrl+F5 on this page.'
+        : '<b>Reports are not switched on yet.</b> Please ask the master admin to finish the Day 19 setup.';
+      $('sql12Notice').classList.toggle('hidden', !(needsSql12 && !needsSql09 && !needsSql10));
+    }
+
+    async function loadWorkSettings() {
+      const { data, error } = await db.from('work_settings')
+        .select('work_start, work_end, grace_minutes, half_day_hours').eq('id', 1).maybeSingle();
+      if (error) {
+        if (missingTable(error)) {
+          needsSql12 = true;
+          return workSettings;
+        }
+        throw error;
+      }
+      if (data) workSettings = { ...data, half_day_hours: Number(data.half_day_hours) };
+      return workSettings;
+    }
+
+    // ---------- One month of attendance, day by day ----------
+    async function loadMonth(month, showroomId) {
+      const [y, m] = month.split('-').map(Number);
+      const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const dates = Array.from({ length: days }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+      const from = dates[0];
+      const to = dates[days - 1];
+      await Promise.all([loadBase(), loadWorkSettings()]);
+      if (needsSql12) throw Object.assign(new Error('12_reports_and_hours.sql is needed'), { code: 'NEEDS12' });
+      const [summary, holidaysRes] = await Promise.all([
+        fetchAll(() => db.rpc('attendance_day_summary', { p_from: from, p_to: to, p_showroom_id: showroomId || null })
+          .order('employee_id').order('day')),
+        db.from('holidays').select('holiday_date, name, showroom_id').gte('holiday_date', from).lte('holiday_date', to),
+      ]);
+      if (holidaysRes.error) throw holidaysRes.error;
+      const byKey = new Map(summary.map((r) => [r.employee_id + '|' + r.day, r]));
+      const came = new Set(summary.map((r) => r.employee_id));
+      const staff = employees
+        .filter((e) => !showroomId || e.showroom_id === showroomId)
+        .filter((e) => came.has(e.id) || (e.is_active && (!e.created_at || ymd(new Date(e.created_at)) <= to)))
+        .sort(byShowroomThenName);
+      const scopeIds = showroomId ? [showroomId] : myShowrooms().map((x) => x.id);
+      return { month, label: `${MONTH_NAMES[m - 1]} ${y}`, dates, staff, byKey, holidays: holidaysRes.data, today: todayIST(), scopeIds };
+    }
+
+    // What one person did on one day
+    function dayInfo(ctx, emp, date) {
+      if (date > ctx.today) return { code: '' };  // still to come
+      const row = ctx.byKey.get(emp.id + '|' + date);
+      const holiday = ctx.holidays.find((h) => h.holiday_date === date && (h.showroom_id == null || h.showroom_id === emp.showroom_id));
+      const off = holiday ? 'H' : (emp.weekly_off != null && weekdayOf(date) === emp.weekly_off ? 'WO' : null);
+
+      if (row && (row.first_in || row.last_out)) {
+        const sh = shiftOf(emp.showroom_id);
+        const grace = workSettings.grace_minutes;
+        const dayOver = date < ctx.today;
+        const hasOut = !!row.last_out && (!row.first_in || new Date(row.last_out) > new Date(row.first_in));
+        const inMin = row.first_in ? istMin(row.first_in) : null;
+        const outMin = hasOut ? istMin(row.last_out) : null;
+        const worked = row.first_in && hasOut ? Math.round((new Date(row.last_out) - new Date(row.first_in)) / 60000) : null;
+        const lateBy = inMin != null ? inMin - sh.start : 0;
+        const earlyBy = outMin != null ? sh.end - outMin : 0;
+        const info = {
+          present: true, off, holidayName: holiday?.name, shift: sh, inMin, outMin, worked,
+          late: inMin != null && lateBy > grace, lateBy,
+          early: outMin != null && earlyBy > grace, earlyBy,
+          half: worked != null && worked < workSettings.half_day_hours * 60,
+          noIn: !row.first_in,
+          noOut: !hasOut && dayOver,
+        };
+        info.code = (info.half ? 'HD' : info.late ? 'L' : 'P') + (info.noIn || info.noOut ? '*' : '');
+        return info;
+      }
+      const joined = emp.created_at ? ymd(new Date(emp.created_at)) : null;
+      if ((joined && date < joined) || !emp.is_active) return { code: '–' };
+      if (off) return { code: off, holidayName: holiday?.name };
+      if (date === ctx.today) return { code: '' };  // the day is not over
+      return { code: 'A' };
+    }
+
+    // A person's whole month: every day plus the totals
+    function monthOf(ctx, emp) {
+      const t = { P: 0, L: 0, HD: 0, A: 0, WO: 0, H: 0, lateDays: 0, earlyDays: 0, noOut: 0, workedMin: 0, workedDays: 0,
+        inSum: 0, inDays: 0, outSum: 0, outDays: 0, offWorked: 0, workingDays: 0, cells: [] };
+      for (const date of ctx.dates) {
+        const info = dayInfo(ctx, emp, date);
+        info.date = date;
+        t.cells.push(info);
+        const base = (info.code || '').replace('*', '');
+        if (base in t) t[base]++;
+        if (info.present) {
+          if (info.late) t.lateDays++;
+          if (info.early) t.earlyDays++;
+          if (info.noOut || info.noIn) t.noOut++;
+          if (info.worked != null) { t.workedMin += info.worked; t.workedDays++; }
+          if (info.inMin != null) { t.inSum += info.inMin; t.inDays++; }
+          if (info.outMin != null) { t.outSum += info.outMin; t.outDays++; }
+          if (info.off) t.offWorked++;
+        }
+        if (['P', 'L', 'HD', 'A'].includes(base) && !info.off) t.workingDays++;
+      }
+      t.present = t.P + t.L;
+      t.paid = t.P + t.L + t.HD * 0.5 + t.WO + t.H;
+      return t;
+    }
+
+    function dayNote(c) {
+      return [
+        c.late ? `Late ${c.lateBy} min` : '',
+        c.early ? `Left early ${c.earlyBy} min` : '',
+        c.half ? 'Half day' : '',
+        c.noIn ? 'No check-in' : '',
+        c.noOut ? 'No check-out' : '',
+        c.off === 'WO' ? 'Worked on weekly off' : c.off === 'H' ? 'Worked on a holiday' : '',
+      ].filter(Boolean).join(', ');
+    }
+
+    function cellTitle(c) {
+      if (!c.present) return c.holidayName ? 'Holiday: ' + c.holidayName : '';
+      return [c.inMin != null ? 'In ' + minText(c.inMin) : '', c.outMin != null ? 'Out ' + minText(c.outMin) : '',
+        c.worked != null ? hm(c.worked) : '', dayNote(c)].filter(Boolean).join(' · ');
+    }
+
+    const codeClass = (code) => {
+      const base = (code || '').replace('*', '');
+      return ['P', 'L', 'HD', 'A', 'WO', 'H'].includes(base) ? 'c-' + base : '';
+    };
+
+    // The rules used, in words, for the showrooms in the report
+    const RULES = (scopeIds) => {
+      const scope = showrooms.filter((x) => scopeIds.includes(x.id));
+      const range = (start, end) => `${minText(toMin(start))} to ${minText(toMin(end))}`;
+      let hoursPart;
+      if (scope.length === 1) {
+        const sh = shiftOf(scope[0].id);
+        hoursPart = `Working hours ${minText(sh.start)} to ${minText(sh.end)}${sh.own ? ` (${scope[0].name}'s own hours)` : ''}`;
+      } else {
+        const own = scope.filter((x) => x.work_start && x.work_end);
+        const listed = own.slice(0, 5).map((x) => `${x.name} ${range(x.work_start, x.work_end)}`).join(', ');
+        hoursPart = `Working hours ${range(workSettings.work_start, workSettings.work_end)}` +
+          (own.length ? ` (own hours: ${listed}${own.length > 5 ? ` and ${own.length - 5} more` : ''})` : '');
+      }
+      return `${hoursPart}; late or left early = more than ${workSettings.grace_minutes} min; ` +
+        `half day = worked under ${workSettings.half_day_hours} h.`;
+    };
+    const LEGEND = () => `P = present, L = late, HD = half day (under ${workSettings.half_day_hours} h), A = absent, ` +
+      'WO = weekly off, H = holiday, * = check-in or check-out missing (counted as present), – = not joined yet or inactive. ' +
+      'Paid days = Present + Late + ½ × Half day + Week off + Holiday, up to today. Point at a day to see the times.';
+    const madeOn = () => 'Made on ' + new Date().toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+    const placeName = (showroomId) => showroomId ? showroomName(showroomId) : (isMaster() ? 'All showrooms' : 'All my showrooms');
+    const fileSafe = (text) => text.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const offShort = (emp) => (emp.weekly_off != null ? DAY_NAMES[emp.weekly_off] : '-');
+
+    // ---------- The four reports ----------
+    async function buildMonthReport(type) {
+      const month = $('rptMonth').value;
+      if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('Please choose a month.');
+      const showroomId = Number($('rptShowroom').value) || null;
+      const ctx = await loadMonth(month, showroomId);
+      const people = ctx.staff.map((emp) => ({ emp, t: monthOf(ctx, emp) }));
+      const place = placeName(showroomId);
+      const sum = (f) => people.reduce((n, p) => n + f(p.t), 0);
+      const holidayDays = new Set(ctx.holidays.map((h) => h.holiday_date)).size;
+      const chips = [['Staff', people.length], ['Present days', sum((t) => t.present)], ['Absent days', sum((t) => t.A)],
+        ['Late days', sum((t) => t.lateDays)], ['Half days', sum((t) => t.HD)], ['Holidays', holidayDays]];
+      const base = { month: ctx.label, place, chips, subtitle: `${place} · ${RULES(ctx.scopeIds)} ${madeOn()}.` };
+      if (type === 'register') return registerReport(ctx, people, showroomId, base);
+      if (type === 'summary') return summaryReport(ctx, people, base);
+      return lateReport(ctx, people, base);
+    }
+
+    function registerReport(ctx, people, showroomId, base) {
+      const withShowroom = !showroomId && myShowrooms().length > 1;
+      const dayCols = ctx.dates.map((d) => {
+        const n = Number(d.slice(8));
+        const w = DAY_NAMES[weekdayOf(d)].slice(0, 2);
+        return { title: `${n} ${w}`, html: `${n}<br>${w}`, cls: weekdayOf(d) === 0 ? 'wk' : '' };
+      });
+      const totalTitles = ['Present', 'Late', 'Half day', 'Absent', 'Week off', 'Holiday', 'Paid days'];
+      const totals = (t) => [t.present, t.L, t.HD, t.A, t.WO, t.H, t.paid];
+      const columns = [{ title: 'Employee' }, ...(withShowroom ? [{ title: 'Showroom' }] : []), ...dayCols,
+        ...totalTitles.map((title) => ({ title }))];
+      const rows = people.map(({ emp, t }) => [
+        { v: emp.full_name, html: `<b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(
+          [emp.employee_code, emp.designation, emp.weekly_off != null ? 'Off ' + DAY_NAMES[emp.weekly_off].slice(0, 3) : '']
+            .filter(Boolean).join(' · '))}${emp.is_active ? '' : ' · inactive'}</span>` },
+        ...(withShowroom ? [showroomName(emp.showroom_id)] : []),
+        ...t.cells.map((c) => ({ v: c.code, cls: codeClass(c.code), title: cellTitle(c) })),
+        ...totals(t).map((v) => ({ v, cls: 'tot' })),
+      ]);
+      const title = `Attendance register - ${ctx.label}`;
+      return {
+        ...base, title, columns, rows, register: true, legend: LEGEND(),
+        empty: 'No staff for this showroom and month.',
+        fileName: `attendance_register_${ctx.month}_${fileSafe(base.place)}.xlsx`,
+        sheets: () => {
+          const head = ['S.No', 'Employee code', 'Name', 'Designation', 'Showroom', 'Weekly off', ...dayCols.map((c) => c.title), ...totalTitles];
+          const register = [[`${title} - ${base.place}`], [base.subtitle], [LEGEND()], [], head,
+            ...people.map(({ emp, t }, i) => [i + 1, emp.employee_code || '', emp.full_name, emp.designation || '',
+              showroomName(emp.showroom_id), offShort(emp), ...t.cells.map((c) => c.code), ...totals(t)])];
+          const details = [['Date', 'Day', 'Employee code', 'Name', 'Showroom', 'Status', 'Check-in', 'Check-out', 'Hours',
+            'Late by (min)', 'Left early by (min)', 'Note']];
+          for (const { emp, t } of people) {
+            for (const c of t.cells) {
+              if (!c.code) continue;
+              details.push([c.date, DAY_NAMES[weekdayOf(c.date)], emp.employee_code || '', emp.full_name, showroomName(emp.showroom_id),
+                c.code, c.inMin != null ? minText(c.inMin) : '', c.outMin != null ? minText(c.outMin) : '',
+                c.worked != null ? decimalHours(c.worked) : '', c.late ? c.lateBy : '', c.early ? c.earlyBy : '',
+                c.present ? dayNote(c) : (c.holidayName ? 'Holiday: ' + c.holidayName : '')]);
+            }
+          }
+          return [
+            { name: 'Register', aoa: register, widths: [5, 12, 26, 22, 18, 11, ...dayCols.map(() => 6), 8, 6, 8, 7, 8, 8, 9] },
+            { name: 'Daily details', aoa: details, widths: [11, 10, 12, 26, 18, 7, 10, 10, 7, 12, 16, 30] },
+            { name: 'How to read', aoa: howToRead(ctx), widths: [14, 110] },
+          ];
+        },
+      };
+    }
+
+    function howToRead(ctx) {
+      return [
+        ['How to read the register'], [],
+        ['P', 'Present, on time'],
+        ['L', `Present but late: checked in more than ${workSettings.grace_minutes} minutes after opening time`],
+        ['HD', `Half day: worked less than ${workSettings.half_day_hours} hours (check-in to check-out)`],
+        ['A', 'Absent: no check-in on a working day'],
+        ['WO', 'Weekly off (set for each employee in the Staff tab)'],
+        ['H', 'Holiday (Reports tab, Holidays)'],
+        ['*', 'Check-in or check-out missing; still counted as present'],
+        ['–', 'Not joined yet, or inactive'], [],
+        ['Paid days', 'Present + Late + half of Half days + Week offs + Holidays, up to today. Change it in Excel if your rule is different.'],
+        ['Hours', RULES(ctx.scopeIds)], [],
+        ['Holidays', ctx.holidays.length ? ctx.holidays.map((h) => `${h.holiday_date} ${h.name}` +
+          (h.showroom_id ? ` (${showroomName(h.showroom_id)})` : ' (all showrooms)')).join('; ') : 'None this month'],
+        [madeOn()],
+      ];
+    }
+
+    function summaryReport(ctx, people, base) {
+      const titles = ['S.No', 'Employee code', 'Name', 'Designation', 'Showroom', 'Weekly off', 'Working days', 'Present',
+        'Half days', 'Absent', 'Late days', 'Left early', 'No check-in/out', 'Total hours', 'Average hours a day',
+        'Average check-in', 'Average check-out', 'Worked on off days', 'Paid days'];
+      const values = people.map(({ emp, t }, i) => [i + 1, emp.employee_code || '', emp.full_name, emp.designation || '',
+        showroomName(emp.showroom_id), offShort(emp), t.workingDays, t.present, t.HD, t.A, t.lateDays, t.earlyDays, t.noOut,
+        decimalHours(t.workedMin), t.workedDays ? decimalHours(t.workedMin / t.workedDays) : '',
+        t.inDays ? minText(Math.round(t.inSum / t.inDays)) : '', t.outDays ? minText(Math.round(t.outSum / t.outDays)) : '',
+        t.offWorked, t.paid]);
+      const title = `Monthly summary - ${ctx.label}`;
+      return {
+        ...base, title, columns: titles.map((t) => ({ title: t })),
+        rows: values.map((row) => row.map((v, i) => (i === 2 ? { v, html: `<b>${escapeHtml(v)}</b>` } : v))),
+        legend: 'Working days = days that were not a weekly off or holiday, from joining up to today. Hours count only days ' +
+          'with both a check-in and a check-out. ' + LEGEND().split('. ').slice(-2).join('. '),
+        empty: 'No staff for this showroom and month.',
+        fileName: `monthly_summary_${ctx.month}_${fileSafe(base.place)}.xlsx`,
+        sheets: () => [
+          { name: 'Summary', aoa: [[`${title} - ${base.place}`], [base.subtitle], [], titles, ...values],
+            widths: [5, 12, 26, 22, 18, 11, 9, 8, 8, 8, 8, 9, 10, 10, 12, 11, 11, 11, 9] },
+          { name: 'How to read', aoa: howToRead(ctx), widths: [14, 110] },
+        ],
+      };
+    }
+
+    function lateReport(ctx, people, base) {
+      const titles = ['Date', 'Day', 'Employee code', 'Name', 'Showroom', 'Working hours', 'Check-in', 'Late by (min)',
+        'Check-out', 'Left early by (min)', 'Hours worked', 'What happened'];
+      const list = [];
+      for (const { emp, t } of people) {
+        for (const c of t.cells) {
+          if (!c.present || !(c.late || c.early || c.half || c.noIn || c.noOut)) continue;
+          list.push({ emp, c });
+        }
+      }
+      list.sort((a, b) => a.c.date.localeCompare(b.c.date) || byShowroomThenName(a.emp, b.emp));
+      const values = list.map(({ emp, c }) => [c.date, DAY_NAMES[weekdayOf(c.date)].slice(0, 3), emp.employee_code || '',
+        emp.full_name, showroomName(emp.showroom_id), `${minText(c.shift.start)} to ${minText(c.shift.end)}`,
+        c.inMin != null ? minText(c.inMin) : '-', c.late ? c.lateBy : '', c.outMin != null ? minText(c.outMin) : '-',
+        c.early ? c.earlyBy : '', c.worked != null ? hm(c.worked) : '', dayNote(c)]);
+      const count = (f) => list.filter(({ c }) => f(c)).length;
+      const title = `Late and early report - ${ctx.label}`;
+      return {
+        ...base, title, columns: titles.map((t) => ({ title: t })),
+        chips: [['Late arrivals', count((c) => c.late)], ['Left early', count((c) => c.early)], ['Half days', count((c) => c.half)],
+          ['No check-in/out', count((c) => c.noIn || c.noOut)], ['People', new Set(list.map(({ emp }) => emp.id)).size]],
+        rows: values.map((row) => row.map((v, i) => (i === 3 ? { v, html: `<b>${escapeHtml(v)}</b>` }
+          : i === 11 ? { v, html: `<span style="white-space:normal">${escapeHtml(v)}</span>` } : v))),
+        legend: `Late = checked in more than ${workSettings.grace_minutes} min after opening; left early = checked out more ` +
+          `than ${workSettings.grace_minutes} min before closing; half day = worked under ${workSettings.half_day_hours} h.`,
+        empty: 'Nobody came late or left early this month.',
+        fileName: `late_and_early_${ctx.month}_${fileSafe(base.place)}.xlsx`,
+        sheets: () => [{ name: 'Late and early', aoa: [[`${title} - ${base.place}`], [base.subtitle], [], titles, ...values],
+          widths: [11, 6, 12, 26, 18, 22, 10, 10, 10, 12, 10, 40] }],
+      };
+    }
+
+    async function buildStaffList() {
+      await loadBase();
+      const showroomId = Number($('rptShowroom').value) || null;
+      const place = placeName(showroomId);
+      const list = employees.filter((e) => !showroomId || e.showroom_id === showroomId).sort(byShowroomThenName);
+      const titles = ['S.No', 'Employee code', 'Name', 'Designation', 'Mobile (username)', 'Email ID', 'Showroom No.',
+        'Showroom', 'Weekly off', 'Joined', 'Face registered', 'Status'];
+      const values = list.map((e, i) => [i + 1, e.employee_code || '', e.full_name, e.designation || '', e.phone, e.email || '',
+        showrooms.find((x) => x.id === e.showroom_id)?.showroom_no ?? '', showroomName(e.showroom_id),
+        needsSql12 ? '' : offShort(e), e.created_at ? dateIST(e.created_at) : '',
+        e.face_registered_at ? dateIST(e.face_registered_at) : 'Not registered', e.is_active ? 'Active' : 'Inactive']);
+      const title = 'Staff list';
+      const subtitle = `${place} · ${madeOn()}.`;
+      return {
+        title, subtitle, place, columns: titles.map((t) => ({ title: t })),
+        rows: values.map((row) => row.map((v, i) => (i === 2 ? { v, html: `<b>${escapeHtml(v)}</b>` } : v))),
+        chips: [['Staff', list.length], ['Active', list.filter((e) => e.is_active).length],
+          ['Inactive', list.filter((e) => !e.is_active).length],
+          ['Face not registered', list.filter((e) => e.is_active && !e.face_registered_at).length],
+          ['No weekly off set', needsSql12 ? '-' : list.filter((e) => e.is_active && e.weekly_off == null).length]],
+        legend: 'The username for the app is the mobile number.',
+        empty: 'No staff for this showroom.',
+        fileName: `staff_list_${todayIST()}_${fileSafe(place)}.xlsx`,
+        sheets: () => [{ name: 'Staff', aoa: [[`${title} - ${place}`], [subtitle], [], titles, ...values],
+          widths: [5, 12, 26, 24, 16, 26, 11, 20, 11, 12, 15, 9] }],
+      };
+    }
+
+    // ---------- Showing and downloading ----------
+    function drawReport() {
+      const r = reportData;
+      $('rptTitle').textContent = r.title;
+      $('rptSub').textContent = r.subtitle || '';
+      $('rptLegend').textContent = r.legend || '';
+      $('rptTable').className = r.register ? 'register' : '';
+      $('rptChips').innerHTML = (r.chips || []).map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
+      $('rptHead').innerHTML = '<tr>' + r.columns.map((c) =>
+        `<th${c.cls ? ` class="${c.cls}"` : ''}>${c.html ?? escapeHtml(c.title)}</th>`).join('') + '</tr>';
+      const cell = (c) => (c !== null && typeof c === 'object'
+        ? `<td${c.cls ? ` class="${c.cls}"` : ''}${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${c.html ?? escapeHtml(c.v)}</td>`
+        : `<td>${escapeHtml(c)}</td>`);
+      const max = 2000;
+      $('rptBody').innerHTML = r.rows.slice(0, max).map((row) => '<tr>' + row.map(cell).join('') + '</tr>').join('')
+        || `<tr><td colspan="${r.columns.length}" class="muted">${escapeHtml(r.empty || 'Nothing to show.')}</td></tr>`;
+      if (r.rows.length > max) $('rptLegend').textContent += ` The screen shows the first ${max} rows; the Excel file has all ${r.rows.length}.`;
+    }
+
+    async function renderReports() {
+      const type = $('rptType').value;
+      $('rptMonthBox').classList.toggle('hidden', type === 'staff');
+      if (!$('rptMonth').value) $('rptMonth').value = todayIST().slice(0, 7);
+      $('rptShowBtn').disabled = true;
+      $('rptExcelBtn').disabled = true;
+      setMsg('rptMsg', 'Making the report…', true);
+      let problem = '';
+      try {
+        reportData = type === 'staff' ? await buildStaffList() : await buildMonthReport(type);
+        drawReport();
+      } catch (err) {
+        reportData = null;
+        $('rptHead').innerHTML = '';
+        $('rptBody').innerHTML = '';
+        $('rptChips').innerHTML = '';
+        $('rptTitle').textContent = 'Report';
+        $('rptSub').textContent = '';
+        $('rptLegend').textContent = '';
+        if (err.code === 'NEEDS12' || missingTable(err)) {
+          needsSql12 = true;
+          problem = isMaster() ? 'Please run 12_reports_and_hours.sql in Supabase first (see the red box above).'
+            : 'Reports are not switched on yet. Please ask the master admin.';
+        } else {
+          problem = 'Could not make the report: ' + (err.message || err);
+        }
+      } finally {
+        $('rptShowBtn').disabled = false;
+        $('rptExcelBtn').disabled = !reportData;
+      }
+      showSql12Notice();
+      setMsg('rptMsg', problem, false);
+      renderHolidays();
+    }
+
+    $('rptExcelBtn').addEventListener('click', async () => {
+      if (!reportData) return;
+      $('rptExcelBtn').disabled = true;
+      try {
+        const XLSX = await loadExcelReader();
+        const book = XLSX.utils.book_new();
+        for (const sheet of reportData.sheets()) {
+          const ws = XLSX.utils.aoa_to_sheet(sheet.aoa);
+          if (sheet.widths) ws['!cols'] = sheet.widths.map((w) => ({ wch: w }));
+          XLSX.utils.book_append_sheet(book, ws, sheet.name);
+        }
+        XLSX.writeFile(book, reportData.fileName);
+        setMsg('rptMsg', `Downloaded ${reportData.fileName}`, true);
+      } catch (err) {
+        setMsg('rptMsg', 'Could not make the Excel file: ' + (err.message || err), false);
+      } finally {
+        $('rptExcelBtn').disabled = false;
+      }
+    });
+    $('rptShowBtn').addEventListener('click', renderReports);
+    for (const id of ['rptType', 'rptMonth', 'rptShowroom']) $(id).addEventListener('change', renderReports);
+
+    // ---------- Holidays ----------
+    const canDeleteHoliday = (h) => isMaster() || (h.showroom_id != null && access.showroom_ids.includes(h.showroom_id));
+
+    async function renderHolidays() {
+      const year = ($('rptMonth').value || todayIST()).slice(0, 4);
+      $('holTitle').textContent = `Holidays ${year}`;
+      $('holAddBtn').disabled = needsSql12;
+      if (needsSql12) {
+        $('holRows').innerHTML = '<tr><td colspan="4" class="muted">Holidays need 12_reports_and_hours.sql.</td></tr>';
+        return;
+      }
+      const { data, error } = await db.from('holidays').select('id, holiday_date, name, showroom_id')
+        .gte('holiday_date', `${year}-01-01`).lte('holiday_date', `${year}-12-31`).order('holiday_date');
+      if (error) {
+        $('holRows').innerHTML = `<tr><td colspan="4" class="muted">Could not load holidays: ${escapeHtml(error.message)}</td></tr>`;
+        return;
+      }
+      $('holRows').innerHTML = data.map((h) => `<tr>
+          <td>${dateIST(h.holiday_date + 'T00:00:00+05:30')} <span class="muted">${DAY_NAMES[weekdayOf(h.holiday_date)].slice(0, 3)}</span></td>
+          <td>${escapeHtml(h.name)}</td>
+          <td>${h.showroom_id ? escapeHtml(showroomName(h.showroom_id)) : 'All showrooms'}</td>
+          <td class="actions">${canDeleteHoliday(h)
+            ? `<button type="button" class="secondary danger" data-id="${h.id}" data-name="${escapeHtml(h.name)}">Delete</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="muted">No holidays added for this year yet.</td></tr>';
+    }
+
+    $('holAddBtn').addEventListener('click', async () => {
+      const date = $('holDate').value;
+      const name = $('holName').value.trim();
+      if (!date) return setMsg('holMsg', 'Please choose the date.', false);
+      if (!name) return setMsg('holMsg', 'Please enter the holiday name.', false);
+      const showroomId = Number($('holShowroom').value) || null;
+      $('holAddBtn').disabled = true;
+      try {
+        await rpc('add_holiday', { p_holiday_date: date, p_name: name, p_showroom_id: showroomId });
+        $('holName').value = '';
+        await renderHolidays();
+        setMsg('holMsg', `${name} added (${placeName(showroomId)}).`, true);
+        if (reportData && reportData.month) await renderReports();
+      } catch (err) {
+        setMsg('holMsg', err.message || String(err), false);
+      } finally {
+        $('holAddBtn').disabled = needsSql12;
+      }
+    });
+
+    $('holRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-id]');
+      if (!btn) return;
+      if (!confirm(`Delete the holiday "${btn.dataset.name}"?`)) return;
+      btn.disabled = true;
+      try {
+        await rpc('delete_holiday', { p_holiday_id: Number(btn.dataset.id) });
+        await renderHolidays();
+        setMsg('holMsg', `${btn.dataset.name} deleted.`, true);
+        if (reportData && reportData.month) await renderReports();
+      } catch (err) {
+        setMsg('holMsg', err.message || String(err), false);
+        btn.disabled = false;
       }
     });
 
@@ -2198,6 +2914,7 @@
       document.querySelectorAll('nav.tabs button').forEach((b) =>
         b.classList.toggle('active', b.dataset.tab === tab));
       if (tab === 'attendance') refresh();
+      if (tab === 'reports') renderReports();
       if (tab === 'activity') renderActivity();
       if (tab === 'support') renderSupport();
       if (tab === 'staff') renderStaff();
