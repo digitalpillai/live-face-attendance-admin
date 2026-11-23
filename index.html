@@ -1,6 +1,7 @@
 <!doctype html>
-<!-- index.html | Version: V1
-     Live Face Attendance - Admin dashboard (attendance by day + Excel/CSV download)
+<!-- index.html | Version: V2
+     Live Face Attendance - Admin dashboard
+     V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -24,6 +25,9 @@
     header { background: var(--primary); color: #fff; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     header h1 { font-size: 18px; margin: 0; }
     header .who { font-size: 13px; opacity: .9; }
+    nav.tabs { background: #fff; border-bottom: 1px solid var(--border); padding: 0 16px; display: flex; gap: 4px; overflow-x: auto; }
+    nav.tabs button { background: none; border: none; border-bottom: 3px solid transparent; color: var(--muted); border-radius: 0; padding: 12px 14px; }
+    nav.tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
     main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
     .login { max-width: 380px; margin: 60px auto; }
@@ -36,6 +40,9 @@
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
     .row > div { flex: 1 1 160px; }
     .error { color: var(--red); margin-top: 10px; font-size: 14px; min-height: 1em; }
+    .msg { font-size: 14px; margin-top: 10px; min-height: 1em; }
+    .msg.ok { color: var(--green); }
+    .msg.bad { color: var(--red); }
     .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
     .chip { flex: 1 1 140px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
     .chip b { display: block; font-size: 24px; }
@@ -45,6 +52,7 @@
     th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
     th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
     td.entries { white-space: normal; min-width: 180px; }
+    .actions button { padding: 5px 9px; font-size: 13px; margin: 0 4px 4px 0; }
     .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
     .b-green { background: var(--green-bg); color: var(--green); }
     .b-orange { background: var(--orange-bg); color: var(--orange); }
@@ -55,6 +63,10 @@
     .muted { color: var(--muted); font-size: 13px; }
     .hidden { display: none !important; }
     h2 { font-size: 16px; margin: 0 0 12px; }
+    dialog { border: none; border-radius: 12px; padding: 20px; width: min(420px, 92vw); }
+    dialog::backdrop { background: rgba(0, 0, 0, .35); }
+    label.check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text); font-size: 14px; }
+    label.check input { width: auto; }
   </style>
 </head>
 <body>
@@ -82,7 +94,15 @@
         <button id="logoutBtn" class="secondary" type="button">Log out</button>
       </div>
     </header>
-    <main>
+    <nav class="tabs">
+      <button type="button" data-tab="attendance" class="active">Attendance</button>
+      <button type="button" data-tab="staff">Staff</button>
+      <button type="button" data-tab="showrooms">Showrooms</button>
+      <button type="button" data-tab="settings">Settings</button>
+    </nav>
+
+    <!-- ---------- Attendance ---------- -->
+    <main id="tab-attendance">
       <div class="card">
         <div class="row">
           <div><label for="date">Date</label><input id="date" type="date"></div>
@@ -122,11 +142,93 @@
           Opens in Excel or Google Sheets. Up to 3 months at a time.</p>
       </div>
     </main>
+
+    <!-- ---------- Staff ---------- -->
+    <main id="tab-staff" class="hidden">
+      <div class="card">
+        <h2>Add an employee</h2>
+        <div class="row">
+          <div><label for="newName">Name</label><input id="newName" type="text"></div>
+          <div><label for="newPhone">Mobile number</label><input id="newPhone" type="tel" maxlength="10" inputmode="numeric"></div>
+          <div><label for="newShowroom">Showroom</label><select id="newShowroom"></select></div>
+          <div style="flex:0 0 auto"><button id="addEmpBtn" type="button">Add employee</button></div>
+        </div>
+        <p class="muted">They log in to the app with their mobile number. Their first password is also their mobile number.</p>
+        <div id="staffMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>All staff</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Employee</th><th>Showroom</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="staffRows"></tbody>
+          </table>
+        </div>
+        <p class="muted">Staff who leave: click Edit and untick "Active". Their attendance history is kept.</p>
+      </div>
+    </main>
+
+    <!-- ---------- Showrooms ---------- -->
+    <main id="tab-showrooms" class="hidden">
+      <div class="card">
+        <h2 id="showroomFormTitle">Add a showroom</h2>
+        <input id="srId" type="hidden">
+        <div class="row">
+          <div><label for="srName">Showroom name</label><input id="srName" type="text"></div>
+          <div><label for="srLat">Latitude</label><input id="srLat" type="number" step="any"></div>
+          <div><label for="srLng">Longitude</label><input id="srLng" type="number" step="any"></div>
+          <div><label for="srRadius">Radius (metres)</label><input id="srRadius" type="number" value="100" min="20" max="2000"></div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:0 0 auto"><button id="saveSrBtn" type="button">Save showroom</button></div>
+          <div style="flex:0 0 auto"><button id="cancelSrBtn" type="button" class="secondary hidden">Cancel editing</button></div>
+        </div>
+        <p class="muted">To get the latitude and longitude: in Google Maps, right-click the showroom building
+          (on a phone, press and hold), then copy the two numbers shown. 100 metres is a good radius to start with.</p>
+        <div id="srMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2>All showrooms</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Showroom</th><th>Latitude</th><th>Longitude</th><th>Radius</th><th>Active staff</th><th></th></tr></thead>
+            <tbody id="srRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+    <!-- ---------- Settings ---------- -->
+    <main id="tab-settings" class="hidden">
+      <div class="card" style="max-width:560px">
+        <h2>Face match minimum</h2>
+        <label for="threshold">Minimum score needed to check in (0.20 to 0.90)</label>
+        <input id="threshold" type="number" min="0.2" max="0.9" step="0.05">
+        <p class="muted">Higher is stricter. 0.40 means a 40% match. If genuine staff are often refused,
+          lower it a little. If a wrong person ever gets through, raise it.</p>
+        <button id="saveThresholdBtn" type="button">Save</button>
+        <div id="settingsMsg" class="msg"></div>
+      </div>
+    </main>
   </div>
 
+  <!-- ---------- Edit employee pop-up ---------- -->
+  <dialog id="empDialog">
+    <h2>Edit employee</h2>
+    <input id="editId" type="hidden">
+    <label for="editName">Name</label><input id="editName" type="text">
+    <label for="editShowroom">Showroom</label><select id="editShowroom"></select>
+    <label class="check"><input id="editActive" type="checkbox"> Active (can use the app)</label>
+    <div class="row" style="margin-top:16px">
+      <div style="flex:0 0 auto"><button id="saveEmpBtn" type="button">Save</button></div>
+      <div style="flex:0 0 auto"><button id="closeEmpBtn" type="button" class="secondary">Cancel</button></div>
+    </div>
+    <div id="empMsg" class="msg"></div>
+  </dialog>
+
   <script>
-    // ---- Paste your two Supabase values here (keep the quote marks) ----
-        const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
+    // ---- Your two Supabase values (keep the quote marks) ----
+    const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_OS6wYGwUiV-sI4Zv7eRN-w_QbFu1eyU';
 
     const configured = SUPABASE_URL.startsWith('https://');
@@ -134,6 +236,8 @@
 
     const $ = (id) => document.getElementById(id);
     const DAY_MS = 24 * 60 * 60 * 1000;
+    const TABS = ['attendance', 'staff', 'showrooms', 'settings'];
+    let currentTab = 'attendance';
     let showrooms = [];
     let employees = [];
     let refreshTimer = null;
@@ -147,6 +251,9 @@
     const timeIST = (iso) => new Date(iso).toLocaleTimeString('en-IN', {
       timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit'
     });
+    const dateIST = (iso) => new Date(iso).toLocaleDateString('en-IN', {
+      timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric'
+    });
     const hours = (ms) => {
       const totalMin = Math.round(ms / 60000);
       return Math.floor(totalMin / 60) + ':' + String(totalMin % 60).padStart(2, '0');
@@ -154,6 +261,40 @@
     const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+
+    // ---------- Small helpers ----------
+    function setMsg(id, text, ok) {
+      const el = $(id);
+      el.textContent = text || '';
+      el.className = 'msg ' + (ok ? 'ok' : 'bad');
+    }
+
+    const showroomOptions = (selectedId) => showrooms
+      .map((r) => `<option value="${r.id}"${r.id === selectedId ? ' selected' : ''}>${escapeHtml(r.name)}</option>`)
+      .join('');
+
+    const showroomName = (id) => showrooms.find((s) => s.id === id)?.name ?? '-';
+
+    // Calls a database function and throws its error message
+    async function rpc(name, params) {
+      const { data, error } = await db.rpc(name, params);
+      if (error) throw new Error(error.message);
+      return data;
+    }
+
+    // Calls the admin-users Edge Function (for actions that need Supabase's secret key)
+    async function callAdminUsers(body) {
+      const { data, error } = await db.functions.invoke('admin-users', { body });
+      if (error) {
+        let message = error.message;
+        try {
+          const details = await error.context.json();
+          if (details?.error) message = details.error;
+        } catch (_) { /* keep the general message */ }
+        throw new Error(message);
+      }
+      return data;
+    }
 
     // ---------- Loading data ----------
     // Supabase returns at most 1000 rows per request, so read page by page
@@ -182,7 +323,7 @@
 
     async function loadBase() {
       const [s, e] = await Promise.all([
-        db.from('showrooms').select('id, name').order('name'),
+        db.from('showrooms').select('id, name, latitude, longitude, radius_meters').order('name'),
         db.from('employees')
           .select('id, full_name, phone, is_active, showroom_id, face_registered_at')
           .order('full_name'),
@@ -192,14 +333,18 @@
       showrooms = s.data;
       employees = e.data;
 
-      const select = $('showroom');
-      const current = select.value;
-      select.innerHTML = '<option value="">All showrooms</option>' +
-        showrooms.map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
-      select.value = current;
-    }
+      // Showroom filter on the Attendance tab
+      const filter = $('showroom');
+      const currentFilter = filter.value;
+      filter.innerHTML = '<option value="">All showrooms</option>' + showroomOptions();
+      filter.value = currentFilter;
 
-    const showroomName = (id) => showrooms.find((s) => s.id === id)?.name ?? '-';
+      // Showroom choice in "Add an employee"
+      const newSr = $('newShowroom');
+      const currentNew = newSr.value;
+      newSr.innerHTML = showroomOptions();
+      if (currentNew) newSr.value = currentNew;
+    }
 
     // Active staff for the chosen showroom
     function visibleEmployees() {
@@ -244,7 +389,7 @@
       'In showroom': 'b-green', 'Checked out': 'b-grey', 'Absent': 'b-red', 'No check-out': 'b-orange'
     };
 
-    // ---------- Attendance for the chosen day ----------
+    // ======================= Attendance tab =======================
     async function refresh() {
       $('appError').textContent = '';
       $('refreshBtn').disabled = true;
@@ -297,7 +442,7 @@
       }
     }
 
-    // ---------- Excel / CSV download ----------
+    // Excel / CSV download
     async function exportCsv() {
       const from = $('fromDate').value;
       const to = $('toDate').value;
@@ -352,7 +497,218 @@
       }
     }
 
-    // ---------- Login ----------
+    // ======================= Staff tab =======================
+    async function renderStaff() {
+      try {
+        await loadBase();
+        $('staffRows').innerHTML = employees.map((emp) => `<tr>
+          <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span></td>
+          <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
+          <td>${emp.face_registered_at
+              ? '<span class="badge b-green">Registered</span><br><span class="muted">' + dateIST(emp.face_registered_at) + '</span>'
+              : '<span class="badge b-orange">Not registered</span>'}</td>
+          <td>${emp.is_active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-grey">Inactive</span>'}</td>
+          <td class="actions">
+            <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>
+            <button type="button" class="secondary" data-act="face" data-id="${emp.id}">Reset face</button>
+            <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>
+          </td>
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">No staff yet.</td></tr>';
+      } catch (err) {
+        setMsg('staffMsg', 'Could not load staff: ' + (err.message || err), false);
+      }
+    }
+
+    $('addEmpBtn').addEventListener('click', async () => {
+      const name = $('newName').value.trim();
+      const phone = $('newPhone').value.replace(/\D/g, '');
+      const showroomId = Number($('newShowroom').value);
+      if (!name) return setMsg('staffMsg', 'Please enter the name.', false);
+      if (phone.length !== 10) return setMsg('staffMsg', 'Please enter a 10-digit mobile number.', false);
+      if (!showroomId) return setMsg('staffMsg', 'Please add a showroom first (Showrooms tab).', false);
+
+      $('addEmpBtn').disabled = true;
+      setMsg('staffMsg', 'Adding…', true);
+      try {
+        await callAdminUsers({ action: 'create', full_name: name, phone, showroom_id: showroomId });
+        setMsg('staffMsg', `${name} added. Their login and first password: ${phone}`, true);
+        $('newName').value = '';
+        $('newPhone').value = '';
+        await renderStaff();
+      } catch (err) {
+        setMsg('staffMsg', err.message || String(err), false);
+      } finally {
+        $('addEmpBtn').disabled = false;
+      }
+    });
+
+    $('staffRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const emp = employees.find((x) => String(x.id) === btn.dataset.id);
+      if (!emp) return;
+      setMsg('staffMsg', '');
+
+      if (btn.dataset.act === 'edit') {
+        openEmployeeDialog(emp);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        if (btn.dataset.act === 'face') {
+          if (!confirm(`Reset the face of ${emp.full_name}?\n\nThey will need to register their face again ` +
+                       '(in front of the manager) before they can check in.')) return;
+          await rpc('admin_reset_face', { p_employee_id: emp.id });
+          setMsg('staffMsg', `Face reset for ${emp.full_name}. They can register again in the app.`, true);
+        } else if (btn.dataset.act === 'password') {
+          if (!confirm(`Reset the password of ${emp.full_name} back to their mobile number (${emp.phone})?`)) return;
+          await callAdminUsers({ action: 'reset_password', employee_id: emp.id });
+          setMsg('staffMsg', `The password for ${emp.full_name} is now their mobile number.`, true);
+        }
+        await renderStaff();
+      } catch (err) {
+        setMsg('staffMsg', err.message || String(err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    function openEmployeeDialog(emp) {
+      $('editId').value = emp.id;
+      $('editName').value = emp.full_name;
+      $('editShowroom').innerHTML = showroomOptions(emp.showroom_id);
+      $('editActive').checked = emp.is_active;
+      setMsg('empMsg', '');
+      $('empDialog').showModal();
+    }
+
+    $('closeEmpBtn').addEventListener('click', () => $('empDialog').close());
+
+    $('saveEmpBtn').addEventListener('click', async () => {
+      $('saveEmpBtn').disabled = true;
+      try {
+        await rpc('admin_update_employee', {
+          p_employee_id: Number($('editId').value),
+          p_full_name: $('editName').value,
+          p_showroom_id: Number($('editShowroom').value),
+          p_is_active: $('editActive').checked,
+        });
+        $('empDialog').close();
+        setMsg('staffMsg', 'Saved.', true);
+        await renderStaff();
+      } catch (err) {
+        setMsg('empMsg', err.message || String(err), false);
+      } finally {
+        $('saveEmpBtn').disabled = false;
+      }
+    });
+
+    // ======================= Showrooms tab =======================
+    async function renderShowrooms() {
+      try {
+        await loadBase();
+        $('srRows').innerHTML = showrooms.map((s) => `<tr>
+          <td><b>${escapeHtml(s.name)}</b></td>
+          <td>${s.latitude}</td>
+          <td>${s.longitude}</td>
+          <td>${s.radius_meters} m</td>
+          <td>${employees.filter((e) => e.is_active && e.showroom_id === s.id).length}</td>
+          <td class="actions"><button type="button" class="secondary" data-id="${s.id}">Edit</button></td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">No showrooms yet.</td></tr>';
+      } catch (err) {
+        setMsg('srMsg', 'Could not load showrooms: ' + (err.message || err), false);
+      }
+    }
+
+    function resetShowroomForm() {
+      $('srId').value = '';
+      $('srName').value = '';
+      $('srLat').value = '';
+      $('srLng').value = '';
+      $('srRadius').value = '100';
+      $('showroomFormTitle').textContent = 'Add a showroom';
+      $('cancelSrBtn').classList.add('hidden');
+    }
+
+    $('srRows').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-id]');
+      if (!btn) return;
+      const s = showrooms.find((x) => String(x.id) === btn.dataset.id);
+      if (!s) return;
+      $('srId').value = s.id;
+      $('srName').value = s.name;
+      $('srLat').value = s.latitude;
+      $('srLng').value = s.longitude;
+      $('srRadius').value = s.radius_meters;
+      $('showroomFormTitle').textContent = 'Edit showroom: ' + s.name;
+      $('cancelSrBtn').classList.remove('hidden');
+      setMsg('srMsg', '');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    $('cancelSrBtn').addEventListener('click', resetShowroomForm);
+
+    $('saveSrBtn').addEventListener('click', async () => {
+      $('saveSrBtn').disabled = true;
+      try {
+        const editing = $('srId').value !== '';
+        await rpc('admin_save_showroom', {
+          p_id: editing ? Number($('srId').value) : null,
+          p_name: $('srName').value,
+          p_latitude: parseFloat($('srLat').value),
+          p_longitude: parseFloat($('srLng').value),
+          p_radius_meters: parseInt($('srRadius').value, 10),
+        });
+        setMsg('srMsg', editing ? 'Showroom updated.' : 'Showroom added.', true);
+        resetShowroomForm();
+        await renderShowrooms();
+      } catch (err) {
+        setMsg('srMsg', err.message || String(err), false);
+      } finally {
+        $('saveSrBtn').disabled = false;
+      }
+    });
+
+    // ======================= Settings tab =======================
+    async function loadSettings() {
+      try {
+        const settings = await rpc('admin_get_settings');
+        $('threshold').value = settings?.face_match_threshold ?? '0.40';
+        setMsg('settingsMsg', '');
+      } catch (err) {
+        setMsg('settingsMsg', 'Could not load settings: ' + (err.message || err), false);
+      }
+    }
+
+    $('saveThresholdBtn').addEventListener('click', async () => {
+      const value = parseFloat($('threshold').value);
+      $('saveThresholdBtn').disabled = true;
+      try {
+        await rpc('admin_set_face_threshold', { p_value: value });
+        setMsg('settingsMsg', `Saved. Staff now need at least a ${Math.round(value * 100)}% face match.`, true);
+      } catch (err) {
+        setMsg('settingsMsg', err.message || String(err), false);
+      } finally {
+        $('saveThresholdBtn').disabled = false;
+      }
+    });
+
+    // ======================= Tabs =======================
+    function showTab(tab) {
+      currentTab = tab;
+      for (const t of TABS) $('tab-' + t).classList.toggle('hidden', t !== tab);
+      document.querySelectorAll('nav.tabs button').forEach((b) =>
+        b.classList.toggle('active', b.dataset.tab === tab));
+      if (tab === 'attendance') refresh();
+      if (tab === 'staff') renderStaff();
+      if (tab === 'showrooms') renderShowrooms();
+      if (tab === 'settings') loadSettings();
+    }
+
+    document.querySelectorAll('nav.tabs button').forEach((b) =>
+      b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+    // ======================= Login =======================
     function showLogin(message) {
       clearInterval(refreshTimer);
       $('appView').classList.add('hidden');
@@ -378,10 +734,10 @@
       if (!$('fromDate').value) $('fromDate').value = today.slice(0, 8) + '01'; // 1st of this month
       if (!$('toDate').value) $('toDate').value = today;
 
-      await refresh();
+      showTab('attendance');
       clearInterval(refreshTimer);
       refreshTimer = setInterval(() => {
-        if ($('date').value === todayIST()) refresh();
+        if (currentTab === 'attendance' && $('date').value === todayIST()) refresh();
       }, 60000);
     }
 
