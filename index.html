@@ -1,0 +1,425 @@
+<!doctype html>
+<!-- index.html | Version: V1
+     Live Face Attendance - Admin dashboard (attendance by day + Excel/CSV download)
+     Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
+     the data is protected by the admin login and the security rules in Supabase.
+     Never put the Supabase SECRET key in this file. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Face Attendance - Admin</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #f5f6fa; --card: #ffffff; --text: #1f2330; --muted: #6b7280;
+      --primary: #3f51b5; --border: #e5e7eb;
+      --green: #15803d; --green-bg: #dcfce7;
+      --orange: #c2410c; --orange-bg: #ffedd5;
+      --red: #b91c1c; --red-bg: #fee2e2;
+      --grey-bg: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    header { background: var(--primary); color: #fff; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0; }
+    header .who { font-size: 13px; opacity: .9; }
+    main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .login { max-width: 380px; margin: 60px auto; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+    input, select, button { font: inherit; }
+    input, select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+    button { padding: 9px 14px; border-radius: 8px; border: 1px solid var(--primary); background: var(--primary); color: #fff; cursor: pointer; }
+    button.secondary { background: #fff; color: var(--primary); }
+    button:disabled { opacity: .6; cursor: default; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .row > div { flex: 1 1 160px; }
+    .error { color: var(--red); margin-top: 10px; font-size: 14px; min-height: 1em; }
+    .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    .chip { flex: 1 1 140px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+    .chip b { display: block; font-size: 24px; }
+    .chip span { font-size: 13px; color: var(--muted); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+    td.entries { white-space: normal; min-width: 180px; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .b-green { background: var(--green-bg); color: var(--green); }
+    .b-orange { background: var(--orange-bg); color: var(--orange); }
+    .b-red { background: var(--red-bg); color: var(--red); }
+    .b-grey { background: var(--grey-bg); color: var(--muted); }
+    .entry { display: inline-block; margin: 0 8px 4px 0; font-size: 13px; }
+    .entry.cancelled { text-decoration: line-through; color: var(--muted); }
+    .muted { color: var(--muted); font-size: 13px; }
+    .hidden { display: none !important; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+  </style>
+</head>
+<body>
+  <!-- ======================= Login ======================= -->
+  <main id="loginView" class="hidden">
+    <div class="card login">
+      <h2>Live Face Attendance - Admin</h2>
+      <form id="loginForm">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <div style="margin-top:14px"><button id="loginBtn" type="submit">Log in</button></div>
+        <div id="loginError" class="error"></div>
+      </form>
+    </div>
+  </main>
+
+  <!-- ===================== Dashboard ===================== -->
+  <div id="appView" class="hidden">
+    <header>
+      <h1>Live Face Attendance - Admin</h1>
+      <div class="row" style="align-items:center">
+        <span id="who" class="who"></span>
+        <button id="logoutBtn" class="secondary" type="button">Log out</button>
+      </div>
+    </header>
+    <main>
+      <div class="card">
+        <div class="row">
+          <div><label for="date">Date</label><input id="date" type="date"></div>
+          <div><label for="showroom">Showroom</label><select id="showroom"></select></div>
+          <div style="flex:0 0 auto"><button id="refreshBtn" type="button">Refresh</button></div>
+        </div>
+        <div id="appError" class="error"></div>
+      </div>
+
+      <div class="chips" id="chips"></div>
+
+      <div class="card">
+        <h2 id="tableTitle">Attendance</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Employee</th><th>Showroom</th><th>Status</th><th>First in</th>
+                <th>Last out</th><th>Hours</th><th>Face match</th><th>Entries</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <p class="muted">Times are Indian time. Face match shows the lowest score of the day.
+          Crossed-out entries were undone by the employee. When showing today, the page refreshes every minute.</p>
+      </div>
+
+      <div class="card">
+        <h2>Download for Excel</h2>
+        <div class="row">
+          <div><label for="fromDate">From</label><input id="fromDate" type="date"></div>
+          <div><label for="toDate">To</label><input id="toDate" type="date"></div>
+          <div style="flex:0 0 auto"><button id="exportBtn" type="button">Download CSV</button></div>
+        </div>
+        <p class="muted">One row per employee per day, for the showroom selected above.
+          Opens in Excel or Google Sheets. Up to 3 months at a time.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // ---- Paste your two Supabase values here (keep the quote marks) ----
+        const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_OS6wYGwUiV-sI4Zv7eRN-w_QbFu1eyU';
+
+    const configured = SUPABASE_URL.startsWith('https://');
+    const db = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+    const $ = (id) => document.getElementById(id);
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    let showrooms = [];
+    let employees = [];
+    let refreshTimer = null;
+
+    // ---------- Date and time helpers (Indian time) ----------
+    const ymd = (d) => new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(d); // e.g. "2026-11-23"
+    const todayIST = () => ymd(new Date());
+    const dayStart = (dateStr) => new Date(dateStr + 'T00:00:00+05:30');
+    const timeIST = (iso) => new Date(iso).toLocaleTimeString('en-IN', {
+      timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit'
+    });
+    const hours = (ms) => {
+      const totalMin = Math.round(ms / 60000);
+      return Math.floor(totalMin / 60) + ':' + String(totalMin % 60).padStart(2, '0');
+    };
+    const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+
+    // ---------- Loading data ----------
+    // Supabase returns at most 1000 rows per request, so read page by page
+    async function fetchAll(makeQuery) {
+      const pageSize = 1000;
+      let from = 0;
+      let rows = [];
+      for (;;) {
+        const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+        if (error) throw error;
+        rows = rows.concat(data);
+        if (data.length < pageSize) return rows;
+        from += pageSize;
+      }
+    }
+
+    async function loadLogs(fromDate, toDate) {
+      const start = dayStart(fromDate).toISOString();
+      const end = new Date(dayStart(toDate).getTime() + DAY_MS).toISOString();
+      return fetchAll(() => db.from('attendance_logs')
+        .select('employee_id, check_type, logged_at, distance_meters, face_match_score, cancelled_at')
+        .gte('logged_at', start)
+        .lt('logged_at', end)
+        .order('logged_at', { ascending: true }));
+    }
+
+    async function loadBase() {
+      const [s, e] = await Promise.all([
+        db.from('showrooms').select('id, name').order('name'),
+        db.from('employees')
+          .select('id, full_name, phone, is_active, showroom_id, face_registered_at')
+          .order('full_name'),
+      ]);
+      if (s.error) throw s.error;
+      if (e.error) throw e.error;
+      showrooms = s.data;
+      employees = e.data;
+
+      const select = $('showroom');
+      const current = select.value;
+      select.innerHTML = '<option value="">All showrooms</option>' +
+        showrooms.map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('');
+      select.value = current;
+    }
+
+    const showroomName = (id) => showrooms.find((s) => s.id === id)?.name ?? '-';
+
+    // Active staff for the chosen showroom
+    function visibleEmployees() {
+      const sid = $('showroom').value;
+      return employees.filter((e) => e.is_active && (!sid || String(e.showroom_id) === sid));
+    }
+
+    // One employee, one day: status, first in, last out, hours worked, lowest face match
+    function summarize(logs, dateStr) {
+      const active = logs.filter((l) => !l.cancelled_at);
+      let ms = 0;
+      let openIn = null;
+      for (const l of active) {
+        if (l.check_type === 'in') {
+          openIn = new Date(l.logged_at);
+        } else if (openIn) {
+          ms += new Date(l.logged_at) - openIn;
+          openIn = null;
+        }
+      }
+      const isToday = dateStr === todayIST();
+      const last = active[active.length - 1];
+      let status;
+      if (!last) status = 'Absent';
+      else if (last.check_type === 'out') status = 'Checked out';
+      else status = isToday ? 'In showroom' : 'No check-out';
+      if (openIn && isToday) ms += Date.now() - openIn;
+
+      const ins = active.filter((l) => l.check_type === 'in');
+      const outs = active.filter((l) => l.check_type === 'out');
+      const scores = active.map((l) => l.face_match_score).filter((v) => v != null);
+      return {
+        status,
+        firstIn: ins.length ? ins[0].logged_at : null,
+        lastOut: outs.length ? outs[outs.length - 1].logged_at : null,
+        ms,
+        face: scores.length ? Math.min(...scores) : null,
+      };
+    }
+
+    const BADGE = {
+      'In showroom': 'b-green', 'Checked out': 'b-grey', 'Absent': 'b-red', 'No check-out': 'b-orange'
+    };
+
+    // ---------- Attendance for the chosen day ----------
+    async function refresh() {
+      $('appError').textContent = '';
+      $('refreshBtn').disabled = true;
+      try {
+        await loadBase();
+        const dateStr = $('date').value || todayIST();
+        const logs = await loadLogs(dateStr, dateStr);
+        const staff = visibleEmployees();
+
+        const counts = { 'In showroom': 0, 'Checked out': 0, 'Absent': 0, 'No check-out': 0 };
+        let noFace = 0;
+        const html = staff.map((emp) => {
+          const mine = logs.filter((l) => l.employee_id === emp.id);
+          const s = summarize(mine, dateStr);
+          counts[s.status]++;
+          if (!emp.face_registered_at) noFace++;
+          const entries = mine.map((l) =>
+            `<span class="entry${l.cancelled_at ? ' cancelled' : ''}">` +
+            `${l.check_type === 'in' ? 'IN' : 'OUT'} ${timeIST(l.logged_at)}</span>`).join('');
+          return `<tr>
+            <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span>
+              ${emp.face_registered_at ? '' : '<br><span class="badge b-orange">Face not registered</span>'}</td>
+            <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
+            <td><span class="badge ${BADGE[s.status]}">${s.status}</span></td>
+            <td>${s.firstIn ? timeIST(s.firstIn) : '-'}</td>
+            <td>${s.lastOut ? timeIST(s.lastOut) : '-'}</td>
+            <td>${s.ms ? hours(s.ms) : '-'}</td>
+            <td>${s.face == null ? '-' : Math.round(s.face * 100) + '%'}</td>
+            <td class="entries">${entries || '<span class="muted">No entries</span>'}</td>
+          </tr>`;
+        }).join('');
+
+        $('rows').innerHTML = html ||
+          '<tr><td colspan="8" class="muted">No active employees for this showroom.</td></tr>';
+        $('tableTitle').textContent = 'Attendance - ' + dayStart(dateStr).toLocaleDateString('en-IN', {
+          timeZone: 'Asia/Kolkata', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+        });
+        $('chips').innerHTML = [
+          ['Staff', staff.length],
+          ['In showroom', counts['In showroom']],
+          ['Checked out', counts['Checked out']],
+          ['Absent', counts['Absent']],
+          ['No check-out', counts['No check-out']],
+          ['Face not registered', noFace],
+        ].map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
+      } catch (err) {
+        $('appError').textContent = 'Could not load attendance: ' + (err.message || err);
+      } finally {
+        $('refreshBtn').disabled = false;
+      }
+    }
+
+    // ---------- Excel / CSV download ----------
+    async function exportCsv() {
+      const from = $('fromDate').value;
+      const to = $('toDate').value;
+      if (!from || !to || from > to) {
+        alert('Please choose a valid From and To date.');
+        return;
+      }
+      const days = Math.round((dayStart(to) - dayStart(from)) / DAY_MS) + 1;
+      if (days > 92) {
+        alert('Please choose at most 3 months at a time.');
+        return;
+      }
+      $('exportBtn').disabled = true;
+      try {
+        await loadBase();
+        const logs = await loadLogs(from, to);
+        const staff = visibleEmployees();
+        const rows = [['Date', 'Employee', 'Phone', 'Showroom', 'Status',
+          'First in', 'Last out', 'Hours', 'Lowest face match %', 'Entries']];
+
+        for (let i = 0; i < days; i++) {
+          const dateStr = ymd(new Date(dayStart(from).getTime() + i * DAY_MS));
+          const dayLogs = logs.filter((l) => ymd(new Date(l.logged_at)) === dateStr);
+          for (const emp of staff) {
+            const mine = dayLogs.filter((l) => l.employee_id === emp.id);
+            const s = summarize(mine, dateStr);
+            rows.push([
+              dateStr, emp.full_name, emp.phone, showroomName(emp.showroom_id), s.status,
+              s.firstIn ? timeIST(s.firstIn) : '', s.lastOut ? timeIST(s.lastOut) : '',
+              s.ms ? hours(s.ms) : '', s.face == null ? '' : Math.round(s.face * 100),
+              mine.filter((l) => !l.cancelled_at)
+                .map((l) => `${l.check_type.toUpperCase()} ${timeIST(l.logged_at)}`).join(' | '),
+            ]);
+          }
+        }
+
+        const csv = rows
+          .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+          .join('\r\n');
+        const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `attendance_${from}_to_${to}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } catch (err) {
+        alert('Could not download: ' + (err.message || err));
+      } finally {
+        $('exportBtn').disabled = false;
+      }
+    }
+
+    // ---------- Login ----------
+    function showLogin(message) {
+      clearInterval(refreshTimer);
+      $('appView').classList.add('hidden');
+      $('loginView').classList.remove('hidden');
+      $('loginError').textContent = message || '';
+    }
+
+    async function showApp() {
+      const { data: isAdmin, error } = await db.rpc('is_admin');
+      if (error || !isAdmin) {
+        await db.auth.signOut();
+        showLogin(error ? 'Could not check admin access: ' + error.message
+                        : 'This account is not an admin.');
+        return;
+      }
+      const { data: { user } } = await db.auth.getUser();
+      $('who').textContent = user?.email || '';
+      $('loginView').classList.add('hidden');
+      $('appView').classList.remove('hidden');
+
+      const today = todayIST();
+      if (!$('date').value) $('date').value = today;
+      if (!$('fromDate').value) $('fromDate').value = today.slice(0, 8) + '01'; // 1st of this month
+      if (!$('toDate').value) $('toDate').value = today;
+
+      await refresh();
+      clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => {
+        if ($('date').value === todayIST()) refresh();
+      }, 60000);
+    }
+
+    $('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!db) return;
+      $('loginBtn').disabled = true;
+      $('loginError').textContent = '';
+      const { error } = await db.auth.signInWithPassword({
+        email: $('email').value.trim(),
+        password: $('password').value,
+      });
+      $('loginBtn').disabled = false;
+      if (error) {
+        $('loginError').textContent = 'Wrong email or password.';
+        return;
+      }
+      await showApp();
+    });
+
+    $('logoutBtn').addEventListener('click', async () => {
+      await db.auth.signOut();
+      showLogin('');
+    });
+    $('refreshBtn').addEventListener('click', refresh);
+    $('date').addEventListener('change', refresh);
+    $('showroom').addEventListener('change', refresh);
+    $('exportBtn').addEventListener('click', exportCsv);
+
+    // Start: go straight to the dashboard if already logged in
+    (async () => {
+      if (!configured) {
+        showLogin('Open this file and paste your Supabase URL and publishable key at the top of the script.');
+        return;
+      }
+      const { data: { session } } = await db.auth.getSession();
+      if (session) await showApp(); else showLogin('');
+    })();
+  </script>
+</body>
+</html>
