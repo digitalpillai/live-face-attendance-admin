@@ -1,0 +1,710 @@
+<!doctype html>
+<!-- ceo.html | Version: V2
+     Live Face Attendance - Live attendance of all showrooms, for the CEO.
+     V1: one line per showroom (Total Employees, Present, Absent, Leave, Permissions, Week Off) for any day;
+         click a showroom to see each person's check-in and check-out. Today's numbers refresh every 30 seconds.
+         Works with a view-only login (sees every showroom), the master admin login (every showroom) and
+         HR logins (their own showrooms only). Needs 13_leave_and_live.sql in Supabase.
+     V2: team managers and showroom managers can open it too (their own team only), logging in with their
+         mobile number and app password. Needs 14_teams_faces_reminders.sql for managers.
+     Hosted free on GitHub Pages next to the admin dashboard (index.html). It uses the Supabase PUBLISHABLE key,
+     which is safe to be public: the data is protected by the login and the security rules in Supabase.
+     Never put the Supabase SECRET key in this file. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Attendance - All Showrooms</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #f4f5fa; --card: #ffffff; --text: #1f2330; --muted: #6b7280; --line: #e5e7eb;
+      --primary: #3f51b5; --primary-dark: #303f9f;
+      --green: #15803d; --green-bg: #dcfce7;
+      --orange: #c2410c; --orange-bg: #ffedd5;
+      --red: #b91c1c; --red-bg: #fee2e2;
+      --blue: #1d4ed8; --blue-bg: #dbeafe;
+      --purple: #7e22ce; --purple-bg: #f3e8ff;
+      --grey: #4b5563; --grey-bg: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg);
+      color: var(--text); -webkit-text-size-adjust: 100%; }
+    button, input { font: inherit; }
+    .hidden { display: none !important; }
+
+    header { background: var(--primary); color: #fff; padding: 12px 16px; display: flex; align-items: center;
+      justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 18px; letter-spacing: .01em; }
+    header .sub { font-size: 12px; opacity: .85; margin-top: 2px; }
+    header .right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    header .who { font-size: 12px; opacity: .9; }
+    header a, header button { color: #fff; background: rgba(255, 255, 255, .14); border: 1px solid rgba(255, 255, 255, .35);
+      border-radius: 8px; padding: 6px 10px; font-size: 13px; text-decoration: none; cursor: pointer; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 14px 16px 40px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+
+    /* Date bar */
+    .datebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .datebar .pick { display: flex; align-items: center; gap: 6px; }
+    .datebar input[type=date] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+      min-width: 150px; color: var(--text); }
+    .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--primary); background: var(--primary); color: #fff;
+      cursor: pointer; font-size: 14px; }
+    .btn.light { background: #fff; color: var(--primary); }
+    .btn.icon { padding: 8px 11px; font-weight: 700; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .datebar .grow { flex: 1 1 auto; }
+    .live { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .live .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; display: inline-block; }
+    .live.on .dot { background: #16a34a; box-shadow: 0 0 0 0 rgba(22, 163, 74, .5); animation: pulse 2s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, .45); } 70% { box-shadow: 0 0 0 7px rgba(22, 163, 74, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); } }
+    .dayname { font-weight: 600; font-size: 15px; margin-top: 10px; }
+
+    /* Summary numbers */
+    .stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 14px; }
+    .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 12px 10px;
+      border-top: 4px solid var(--grey-bg); }
+    .stat b { display: block; font-size: 26px; line-height: 1.1; }
+    .stat span { font-size: 12px; color: var(--muted); }
+    .stat.total { border-top-color: var(--primary); }
+    .stat.present { border-top-color: var(--green); } .stat.present b { color: var(--green); }
+    .stat.absent { border-top-color: var(--red); } .stat.absent b { color: var(--red); }
+    .stat.leave { border-top-color: var(--blue); } .stat.leave b { color: var(--blue); }
+    .stat.perm { border-top-color: var(--purple); } .stat.perm b { color: var(--purple); }
+    .stat.off { border-top-color: #9ca3af; } .stat.off b { color: var(--grey); }
+
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+    .head h2 { margin: 0; font-size: 16px; }
+    .head input[type=search] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; min-width: 200px; flex: 0 1 260px; }
+
+    /* Tables */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+    th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+    td.num, th.num { text-align: center; }
+    td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+    td.sno { color: var(--muted); width: 1%; white-space: nowrap; }
+    tbody tr.click { cursor: pointer; }
+    tbody tr.click:hover td { background: #f8f9ff; }
+    tbody tr.click:focus { outline: 2px solid var(--primary); outline-offset: -2px; }
+    .name { font-weight: 600; color: var(--primary-dark); }
+    .small { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+    td .zero { color: #c4c7cf; font-weight: 400; }
+    .n-present { color: var(--green); } .n-absent { color: var(--red); } .n-leave { color: var(--blue); }
+    .n-perm { color: var(--purple); } .n-off { color: var(--grey); }
+    tfoot td { font-weight: 700; background: #f8fafc; border-top: 2px solid var(--line); }
+    .arrow { color: var(--muted); font-size: 18px; }
+    th .short { display: none; }
+    .st-inline { display: none; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; margin: 1px 4px 1px 0; }
+    .b-green { background: var(--green-bg); color: var(--green); }
+    .b-orange { background: var(--orange-bg); color: var(--orange); }
+    .b-red { background: var(--red-bg); color: var(--red); }
+    .b-blue { background: var(--blue-bg); color: var(--blue); }
+    .b-purple { background: var(--purple-bg); color: var(--purple); }
+    .b-grey { background: var(--grey-bg); color: var(--grey); }
+    .t-late { color: var(--orange); font-weight: 600; }
+    .t-early { color: var(--orange); font-weight: 600; }
+    .t-in { color: var(--green); }
+    .t-missing { color: var(--orange); }
+
+    /* Showroom page */
+    .back { background: none; border: none; color: var(--primary); padding: 6px 0; cursor: pointer; font-size: 15px; font-weight: 600; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+    .filters button { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 6px 12px; cursor: pointer;
+      font-size: 13px; color: var(--text); }
+    .filters button b { margin-left: 4px; }
+    .filters button.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+    .note { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 10px; padding: 10px 12px;
+      font-size: 14px; margin-bottom: 14px; }
+    .error { color: var(--red); font-size: 14px; margin-top: 8px; min-height: 1em; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .legend { color: var(--muted); font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
+
+    /* Login */
+    .login { max-width: 380px; margin: 60px auto; }
+    .login h2 { margin: 0 0 4px; font-size: 18px; }
+    .login label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+    .login input { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+
+    @media (max-width: 760px) {
+      .stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .stat b { font-size: 22px; }
+    }
+    @media (max-width: 560px) {
+      main { padding: 10px 10px 30px; }
+      .card { padding: 10px; }
+      th, td { padding: 8px 5px; font-size: 13px; }
+      th { font-size: 11px; letter-spacing: 0; }
+      th .long { display: none; }
+      th .short { display: inline; }
+      #srRows td, #srTotal td, #listView th { padding: 8px 3px; }
+      #listView td.num { font-size: 14px; }
+      .arrow { display: none; }
+      .st { display: none; }
+      .st-inline { display: block; margin-top: 4px; }
+      .st-inline .badge { white-space: normal; }
+      #detailView th, #detailView td { padding: 8px 4px; }
+      td.sno { padding-left: 2px !important; padding-right: 2px !important; }
+      .head input[type=search] { min-width: 0; flex: 1 1 100%; }
+      .datebar input[type=date] { min-width: 0; flex: 1 1 auto; }
+      .datebar .pick { flex: 1 1 100%; }
+      header .who { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <!-- ======================= Login ======================= -->
+  <main id="loginView" class="hidden">
+    <div class="card login">
+      <h2>Live Attendance</h2>
+      <p class="muted">All showrooms · Live Face Attendance</p>
+      <form id="loginForm">
+        <label for="email">Login (email, or mobile number for managers)</label>
+        <input id="email" type="text" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <div style="margin-top:16px"><button id="loginBtn" class="btn" type="submit">Log in</button></div>
+        <div id="loginError" class="error"></div>
+      </form>
+    </div>
+  </main>
+
+  <!-- ======================= Page ======================= -->
+  <div id="appView" class="hidden">
+    <header>
+      <div>
+        <h1>Live Attendance</h1>
+        <div class="sub" id="scopeText">All showrooms</div>
+      </div>
+      <div class="right">
+        <span id="who" class="who"></span>
+        <a id="adminLink" href="index.html" class="hidden">Admin dashboard</a>
+        <button id="logoutBtn" type="button">Log out</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="card">
+        <div class="datebar">
+          <div class="pick">
+            <button id="prevBtn" class="btn light icon" type="button" aria-label="Previous day" title="Previous day">&#8249;</button>
+            <input id="date" type="date" aria-label="Choose a date">
+            <button id="nextBtn" class="btn light icon" type="button" aria-label="Next day" title="Next day">&#8250;</button>
+            <button id="todayBtn" class="btn light" type="button">Today</button>
+          </div>
+          <div class="grow"></div>
+          <span id="live" class="live"><i class="dot"></i><span id="liveText">Loading…</span></span>
+          <button id="refreshBtn" class="btn" type="button">Refresh</button>
+        </div>
+        <div id="dayName" class="dayname"></div>
+        <div id="pageError" class="error"></div>
+      </div>
+
+      <div id="note" class="note hidden"></div>
+
+      <!-- All showrooms -->
+      <section id="listView">
+        <div class="stats" id="stats"></div>
+        <div class="card">
+          <div class="head">
+            <h2 id="listTitle">Showrooms</h2>
+            <input id="search" type="search" placeholder="Search showroom" aria-label="Search showroom">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>S.No</th>
+                  <th><span class="long">Showroom Name</span><span class="short">Showroom</span></th>
+                  <th class="num"><span class="long">Total Employees</span><span class="short">Total</span></th>
+                  <th class="num"><span class="long">Present</span><span class="short">Pres.</span></th>
+                  <th class="num"><span class="long">Absent</span><span class="short">Abs.</span></th>
+                  <th class="num">Leave</th>
+                  <th class="num"><span class="long">Permissions</span><span class="short">Perm.</span></th>
+                  <th class="num"><span class="long">Week Off</span><span class="short">Off</span></th>
+                  <th class="arrow" aria-hidden="true"></th>
+                </tr>
+              </thead>
+              <tbody id="srRows"></tbody>
+              <tfoot id="srTotal"></tfoot>
+            </table>
+          </div>
+          <p class="legend" id="legend"></p>
+        </div>
+      </section>
+
+      <!-- One showroom -->
+      <section id="detailView" class="hidden">
+        <button id="backBtn" class="back" type="button">&#8592; All showrooms</button>
+        <div class="card">
+          <div class="head" style="margin-bottom:4px">
+            <div>
+              <h2 id="srTitle">Showroom</h2>
+              <span id="srSub" class="muted"></span>
+            </div>
+          </div>
+          <div class="filters" id="filters"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>S.No</th><th>Employee Name</th><th>Check-in</th><th>Check-out</th><th class="st">Status</th></tr>
+              </thead>
+              <tbody id="empRows"></tbody>
+            </table>
+          </div>
+          <p class="legend" id="detailLegend"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // ---- Your two Supabase values (the same as in index.html; keep the quote marks) ----
+    const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_OS6wYGwUiV-sI4Zv7eRN-w_QbFu1eyU';
+
+    const configured = SUPABASE_URL.startsWith('https://');
+    const db = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+    const $ = (id) => document.getElementById(id);
+    const REFRESH_SECONDS = 30;
+    const LEAVE_NAMES = { CL: 'Casual leave', SL: 'Sick leave', EL: 'Earned leave', CO: 'Comp off', LOP: 'Loss of pay' };
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    let access = { role: 'none', showroom_ids: [] };
+    let showrooms = [];
+    let work = { work_start: '09:30:00', work_end: '19:30:00', grace_minutes: 10 };
+    let rows = [];                // day_attendance rows of the chosen day
+    let loadedDate = null;
+    let loadedAt = null;
+    let loading = false;
+    let filter = 'all';           // the chip chosen on a showroom's page
+    let timer = null;
+
+    // ---------- Time helpers (Indian time) ----------
+    const ymd = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+    const todayIST = () => ymd(new Date());
+    const addDays = (date, n) => ymd(new Date(new Date(date + 'T12:00:00+05:30').getTime() + n * 86400000));
+    const istMin = (iso) => { const d = new Date(new Date(iso).getTime() + 330 * 60000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+    const nowMin = () => istMin(new Date().toISOString());
+    const dur = (min) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ''}`); // 95 -> "1 h 35 min"
+    const toMin = (t) => { const [h, m] = String(t || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
+    const minText = (min) => { const h = Math.floor(min / 60) % 24; return `${h % 12 || 12}:${String(min % 60).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+    const timeText = (iso) => minText(istMin(iso));
+    const longDate = (date) => new Date(date + 'T12:00:00+05:30').toLocaleDateString('en-IN', {
+      timeZone: 'Asia/Kolkata', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    // Managers log in with their mobile number, like in the app (the login behind it is <mobile>@pillaimotors.in)
+    const loginEmail = (typed) => {
+      const t = String(typed || '').trim();
+      const digits = t.replace(/[\s-]/g, '').replace(/^\+?91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, '');
+      return /^\d{10}$/.test(digits) ? digits + '@pillaimotors.in' : t.toLowerCase();
+    };
+    const missingFunction = (err) => ['PGRST202', '42883', 'PGRST205', '42P01'].includes(err?.code);
+
+    // Working hours of a showroom: its own, or the default
+    function shiftOf(showroomId) {
+      const s = showrooms.find((x) => x.id === showroomId);
+      const own = !!(s && s.work_start && s.work_end);
+      return { start: toMin(own ? s.work_start : work.work_start), end: toMin(own ? s.work_end : work.work_end) };
+    }
+
+    // ---------- Loading ----------
+    async function loadShowrooms() {
+      let res = await db.from('showrooms').select('id, name, showroom_no, brand, city, work_start, work_end');
+      if (res.error && res.error.code === '42703') res = await db.from('showrooms').select('id, name');
+      if (res.error) throw res.error;
+      let list = res.data;
+      if (access.role === 'hr' || access.role === 'manager') list = list.filter((s) => access.showroom_ids.includes(s.id));
+      return list.sort((a, b) => (a.showroom_no ?? 1e9) - (b.showroom_no ?? 1e9) || a.name.localeCompare(b.name));
+    }
+
+    async function loadWork() {
+      const { data, error } = await db.from('work_settings').select('work_start, work_end, grace_minutes').eq('id', 1).maybeSingle();
+      if (!error && data) work = data;
+    }
+
+    async function loadDay(date) {
+      const pageSize = 1000;
+      let all = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await db.rpc('day_attendance', { p_day: date }).range(from, from + pageSize - 1);
+        if (error) throw error;
+        all = all.concat(data);
+        if (data.length < pageSize) return all;
+      }
+    }
+
+    async function load(quiet) {
+      if (loading) return;
+      const date = currentDate();
+      loading = true;
+      $('refreshBtn').disabled = true;
+      if (!quiet) $('liveText').textContent = 'Loading…';
+      try {
+        const [srs, dayRows] = await Promise.all([loadShowrooms(), loadDay(date), loadWork()]);
+        showrooms = srs;
+        rows = dayRows;
+        loadedDate = date;
+        loadedAt = new Date();
+        $('pageError').textContent = '';
+        render();
+      } catch (err) {
+        loadedAt = null;
+        if (missingFunction(err)) {
+          $('pageError').textContent = access.role === 'master'
+            ? 'One step is missing in Supabase: run 13_leave_and_live.sql (SQL Editor), then press Ctrl+F5 on this page.'
+            : 'This page is not switched on yet. Please ask the master admin to finish the setup (13_leave_and_live.sql).';
+        } else {
+          $('pageError').textContent = 'Could not load: ' + (err.message || err) + (quiet ? ' (will try again)' : '');
+        }
+      } finally {
+        loading = false;
+        $('refreshBtn').disabled = false;
+        showLive();
+      }
+      // The date was changed again while loading: load that day too
+      if (loadedDate && currentDate() !== loadedDate) load(false);
+    }
+
+    // ---------- What one person's day looks like ----------
+    function personDay(r) {
+      const sh = shiftOf(r.showroom_id);
+      const grace = Number(work.grace_minutes ?? 10);
+      const isToday = loadedDate === todayIST();
+      const out = { key: r.status, badges: [], inText: '–', outText: '–', inCls: '', outCls: '' };
+      if (r.status === 'present') {
+        const inMin = r.first_in ? istMin(r.first_in) : null;
+        const lateBy = inMin != null ? inMin - sh.start : 0;
+        const late = inMin != null && lateBy > grace;
+        const stillIn = r.check_ins > r.check_outs;   // the last thing they did was check in
+        out.inText = r.first_in ? timeText(r.first_in) : 'No check-in';
+        out.inCls = !r.first_in ? 't-missing' : late ? 't-late' : '';
+        if (late) out.inNote = `Late ${dur(lateBy)}`;
+        if (stillIn) {
+          out.outText = isToday ? 'In showroom' : 'No check-out';
+          out.outCls = isToday ? 't-in' : 't-missing';
+          if (r.last_out) out.outNote = (isToday ? 'Went out at ' : 'Last out at ') + timeText(r.last_out);
+        } else if (r.last_out) {
+          const earlyBy = sh.end - istMin(r.last_out);
+          out.outText = timeText(r.last_out);
+          if (earlyBy > grace) { out.outCls = 't-early'; out.outNote = `Left ${dur(earlyBy)} early`; }
+        }
+        out.badges.push(late ? '<span class="badge b-orange">Present · Late</span>' : '<span class="badge b-green">Present</span>');
+      } else if (r.status === 'absent') {
+        const notYet = isToday && nowMin() <= sh.start + grace;
+        out.badges.push(notYet ? '<span class="badge b-grey">Not in yet</span>' : '<span class="badge b-red">Absent</span>');
+        if (r.waiting) out.badges.push(`<span class="badge b-grey">${r.waiting.includes('leave') ? 'Leave asked' : 'Permission asked'}</span>`);
+      } else if (r.status === 'leave') {
+        out.badges.push(`<span class="badge b-blue" title="${escapeHtml(LEAVE_NAMES[r.leave_type] || 'Leave')}">Leave · ${escapeHtml(r.leave_type || '')}</span>`);
+      } else if (r.status === 'week_off') {
+        out.badges.push('<span class="badge b-grey">Week Off</span>');
+      } else if (r.status === 'holiday') {
+        out.badges.push(`<span class="badge b-grey">Holiday${r.holiday_name ? ' · ' + escapeHtml(r.holiday_name) : ''}</span>`);
+      }
+      if (r.permission_from) {
+        out.badges.push(`<span class="badge b-purple">Permission ${minText(toMin(r.permission_from))} – ${minText(toMin(r.permission_to))}</span>`);
+      }
+      return out;
+    }
+
+    // Counts for a group of people
+    function countOf(list) {
+      const c = { total: list.length, present: 0, absent: 0, leave: 0, perm: 0, off: 0 };
+      for (const r of list) {
+        if (r.status === 'present') c.present++;
+        else if (r.status === 'absent') c.absent++;
+        else if (r.status === 'leave') c.leave++;
+        else c.off++;                       // week off or holiday
+        if (r.permission_from) c.perm++;
+      }
+      return c;
+    }
+
+    const num = (n, cls) => (n ? `<span class="${cls}">${n}</span>` : '<span class="zero">0</span>');
+
+    // ---------- Showing ----------
+    function render() {
+      const date = loadedDate;
+      $('dayName').textContent = longDate(date) + (date === todayIST() ? ' (today)' : '');
+      $('date').max = todayIST();
+      $('date').value = date;
+      $('nextBtn').disabled = date >= todayIST();
+      $('todayBtn').disabled = date === todayIST();
+
+      const holidays = [...new Set(rows.filter((r) => r.status === 'holiday' && r.holiday_name).map((r) => r.holiday_name))];
+      const isToday = date === todayIST();
+      const earliest = showrooms.length ? Math.min(...showrooms.map((s) => shiftOf(s.id).start)) : toMin(work.work_start);
+      const notes = [];
+      if (holidays.length) notes.push('Holiday: ' + holidays.map(escapeHtml).join(', ') + ' (counted under Week Off).');
+      if (isToday && nowMin() <= earliest + Number(work.grace_minutes ?? 10)) {
+        notes.push(`Work starts at ${minText(earliest)}. Staff who have not checked in yet are counted as Absent until then.`);
+      }
+      $('note').innerHTML = notes.join('<br>');
+      $('note').classList.toggle('hidden', !notes.length);
+
+      const route = readHash();
+      const sr = route.s != null ? showrooms.find((s) => s.id === route.s) : null;
+      if (route.s != null && (sr || route.s === 0)) renderShowroom(route.s, sr); else renderList();
+    }
+
+    function renderList() {
+      $('listView').classList.remove('hidden');
+      $('detailView').classList.add('hidden');
+      const all = countOf(rows);
+      $('stats').innerHTML = [
+        ['total', all.total, 'Total Employees'], ['present', all.present, 'Present'], ['absent', all.absent, 'Absent'],
+        ['leave', all.leave, 'Leave'], ['perm', all.perm, 'Permissions'], ['off', all.off, 'Week Off'],
+      ].map(([cls, n, label]) => `<div class="stat ${cls}"><b>${n}</b><span>${label}</span></div>`).join('');
+
+      const byShowroom = new Map();
+      for (const r of rows) {
+        const key = r.showroom_id ?? 0;
+        if (!byShowroom.has(key)) byShowroom.set(key, []);
+        byShowroom.get(key).push(r);
+      }
+      const list = showrooms.map((s) => ({ s, people: byShowroom.get(s.id) || [] }));
+      if (byShowroom.has(0)) list.push({ s: { id: 0, name: 'No showroom set' }, people: byShowroom.get(0) });
+
+      const words = $('search').value.trim().toLowerCase();
+      const shown = list.filter(({ s }) => !words ||
+        [s.name, s.brand, s.city, s.showroom_no].filter((v) => v != null).join(' ').toLowerCase().includes(words));
+
+      $('listTitle').textContent = `Showrooms (${shown.length})`;
+      $('srRows').innerHTML = shown.map(({ s, people }, i) => {
+        const c = countOf(people);
+        const holiday = people.find((r) => r.status === 'holiday')?.holiday_name;
+        const info = [s.brand, s.city].filter(Boolean).join(' · ');
+        return `<tr class="click" tabindex="0" data-id="${s.id}" title="See the staff of ${escapeHtml(s.name)}">
+          <td class="sno">${i + 1}</td>
+          <td><span class="name">${escapeHtml(s.name)}</span>${info || holiday
+            ? `<span class="small">${escapeHtml(info)}${holiday ? `${info ? ' · ' : ''}Holiday: ${escapeHtml(holiday)}` : ''}</span>` : ''}</td>
+          <td class="num">${c.total}</td>
+          <td class="num">${num(c.present, 'n-present')}</td>
+          <td class="num">${num(c.absent, 'n-absent')}</td>
+          <td class="num">${num(c.leave, 'n-leave')}</td>
+          <td class="num">${num(c.perm, 'n-perm')}</td>
+          <td class="num">${num(c.off, 'n-off')}</td>
+          <td class="arrow" aria-hidden="true">&#8250;</td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="9" class="muted">${words ? 'No showroom matches your search.' : 'No showrooms to show.'}</td></tr>`;
+
+      const t = countOf(shown.flatMap(({ people }) => people));
+      $('srTotal').innerHTML = shown.length ? `<tr>
+          <td></td><td>Total${words ? ' (search)' : ''}</td>
+          <td class="num">${t.total}</td><td class="num n-present">${t.present}</td><td class="num n-absent">${t.absent}</td>
+          <td class="num n-leave">${t.leave}</td><td class="num n-perm">${t.perm}</td><td class="num n-off">${t.off}</td><td></td>
+        </tr>` : '';
+
+      $('legend').textContent = 'Present = checked in at least once this day. Absent = no check-in and no approved leave. ' +
+        'Leave = approved leave. Permissions = approved permission for a few hours (these people are also counted in Present ' +
+        'or Absent). Week Off includes holidays. Total Employees = active staff who had joined by this day. Times are Indian time. ' +
+        'Click a showroom to see each person.';
+    }
+
+    function renderShowroom(id, sr) {
+      $('listView').classList.add('hidden');
+      $('detailView').classList.remove('hidden');
+      const people = rows.filter((r) => (r.showroom_id ?? 0) === id)
+        .sort((a, b) => a.full_name.localeCompare(b.full_name));
+      const name = sr ? sr.name : 'No showroom set';
+      const sh = shiftOf(id);
+      $('srTitle').textContent = name;
+      $('srSub').textContent = [sr?.brand, sr?.city, `Working hours ${minText(sh.start)} to ${minText(sh.end)}`].filter(Boolean).join(' · ');
+      document.title = `${name} - Live Attendance`;
+
+      const c = countOf(people);
+      const chips = [['all', 'All', c.total], ['present', 'Present', c.present], ['absent', 'Absent', c.absent],
+        ['leave', 'Leave', c.leave], ['perm', 'Permissions', c.perm], ['off', 'Week Off', c.off]];
+      if (!chips.some(([k]) => k === filter)) filter = 'all';
+      $('filters').innerHTML = chips.map(([k, label, n]) =>
+        `<button type="button" data-f="${k}" class="${k === filter ? 'on' : ''}" aria-pressed="${k === filter}">${label}<b>${n}</b></button>`).join('');
+
+      const match = (r) => filter === 'all' || (filter === 'perm' ? !!r.permission_from
+        : filter === 'off' ? (r.status === 'week_off' || r.status === 'holiday') : r.status === filter);
+      const shown = people.filter(match);
+      $('empRows').innerHTML = shown.map((r, i) => {
+        const d = personDay(r);
+        const sub = [r.designation, r.employee_code].filter(Boolean).join(' · ');
+        return `<tr>
+          <td class="sno">${i + 1}</td>
+          <td><b>${escapeHtml(r.full_name)}</b>${sub ? `<span class="small">${escapeHtml(sub)}</span>` : ''}<span class="st-inline">${d.badges.join('')}</span></td>
+          <td><span class="${d.inCls}">${escapeHtml(d.inText)}</span>${d.inNote ? `<span class="small t-late">${escapeHtml(d.inNote)}</span>` : ''}</td>
+          <td><span class="${d.outCls}">${escapeHtml(d.outText)}</span>${d.outNote ? `<span class="small">${escapeHtml(d.outNote)}</span>` : ''}</td>
+          <td class="st">${d.badges.join('')}</td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="5" class="muted">${people.length ? 'Nobody in this group.' : 'No active staff in this showroom.'}</td></tr>`;
+
+      $('detailLegend').textContent = `Check-in = first check-in of the day; check-out = last check-out. Late = more than ` +
+        `${Number(work.grace_minutes ?? 10)} minutes after opening time. Times are Indian time.`;
+    }
+
+    function showLive() {
+      const el = $('live');
+      const isToday = loadedDate === todayIST();
+      el.classList.toggle('on', isToday && !!loadedAt);
+      if (!loadedAt) { $('liveText').textContent = 'Not up to date'; return; }
+      const at = loadedAt.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+      $('liveText').textContent = isToday ? `Live · updated ${at}` : `Updated ${at}`;
+    }
+
+    // ---------- Address bar: #d=2026-11-24&s=5 (so the phone's Back button works) ----------
+    function readHash() {
+      const p = new URLSearchParams(location.hash.slice(1));
+      const d = p.get('d');
+      const s = p.get('s');
+      return { d: /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : null, s: s != null && s !== '' && !isNaN(Number(s)) ? Number(s) : null };
+    }
+    function currentDate() {
+      const d = readHash().d || todayIST();
+      return d > todayIST() ? todayIST() : d;
+    }
+    let openedFromList = false;   // a showroom was opened from the list, so "Back" can simply go back
+    function go(date, showroomId, replace) {
+      const parts = [];
+      if (date && date !== todayIST()) parts.push('d=' + date);
+      if (showroomId != null) parts.push('s=' + showroomId);
+      const url = location.pathname + location.search + (parts.length ? '#' + parts.join('&') : '');
+      if (replace) history.replaceState(null, '', url); else history.pushState(null, '', url);
+      onRoute();
+    }
+    function onRoute() {
+      if (readHash().s == null) {
+        openedFromList = false;
+        document.title = 'Live Attendance - All Showrooms';
+      }
+      if (currentDate() !== loadedDate) load(false); else render();
+    }
+    window.addEventListener('popstate', onRoute);
+    window.addEventListener('hashchange', onRoute);
+
+    // ---------- Buttons ----------
+    function openShowroom(id) {
+      filter = 'all';
+      openedFromList = true;
+      go(loadedDate, id, false);
+      window.scrollTo({ top: 0 });
+    }
+    $('srRows').addEventListener('click', (e) => {
+      const tr = e.target.closest('tr[data-id]');
+      if (tr) openShowroom(Number(tr.dataset.id));
+    });
+    $('srRows').addEventListener('keydown', (e) => {
+      const tr = e.target.closest('tr[data-id]');
+      if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openShowroom(Number(tr.dataset.id)); }
+    });
+    $('filters').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]');
+      if (!b) return;
+      filter = b.dataset.f;
+      render();
+    });
+    $('backBtn').addEventListener('click', () => {
+      if (openedFromList) history.back(); else go(loadedDate, null, true);
+    });
+    $('search').addEventListener('input', () => renderList());
+    $('date').addEventListener('change', () => {
+      let d = $('date').value;
+      if (!d) return;
+      if (d > todayIST()) d = todayIST();
+      go(d, readHash().s, false);
+    });
+    $('prevBtn').addEventListener('click', () => go(addDays(currentDate(), -1), readHash().s, true));
+    $('nextBtn').addEventListener('click', () => { const d = addDays(currentDate(), 1); if (d <= todayIST()) go(d, readHash().s, true); });
+    $('todayBtn').addEventListener('click', () => go(todayIST(), readHash().s, true));
+    $('refreshBtn').addEventListener('click', () => load(false));
+
+    // Today's numbers refresh by themselves while the page is open
+    function startTimer() {
+      clearInterval(timer);
+      timer = setInterval(() => {
+        if (document.visibilityState !== 'visible') return;
+        // Showing today (also after midnight, when "today" moves on by itself): load the latest numbers
+        if (currentDate() === todayIST()) load(true); else showLive();
+      }, REFRESH_SECONDS * 1000);
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && currentDate() === todayIST() &&
+          (!loadedAt || Date.now() - loadedAt.getTime() > REFRESH_SECONDS * 1000)) load(true);
+    });
+
+    // ---------- Login ----------
+    function showLogin(message) {
+      clearInterval(timer);
+      $('appView').classList.add('hidden');
+      $('loginView').classList.remove('hidden');
+      $('loginError').textContent = message || '';
+    }
+
+    async function showApp() {
+      let found;
+      try {
+        const { data, error } = await db.rpc('get_my_access');
+        if (error) throw error;
+        found = { role: data.role, name: data.name, showroom_ids: (data.showroom_ids || []).map(Number),
+          team_role: data.team_role ?? null };
+      } catch (err) {
+        await db.auth.signOut();
+        showLogin('Could not check access: ' + (err.message || err));
+        return;
+      }
+      if (!['viewer', 'master', 'hr', 'manager'].includes(found.role)) {
+        await db.auth.signOut();
+        showLogin('This login cannot open the live attendance page. Staff use the phone app instead.');
+        return;
+      }
+      access = found;
+      const { data: { user } } = await db.auth.getUser();
+      $('who').textContent = found.role === 'manager'
+        ? `${found.name || ''} · ${found.team_role === 'showroom_manager' ? 'Showroom manager' : 'Team manager'}`
+        : (found.name ? found.name + ' · ' : '') + (user?.email || '');
+      $('scopeText').textContent = found.role === 'manager' ? 'My team' : found.role === 'hr' ? 'My showrooms' : 'All showrooms';
+      $('adminLink').classList.toggle('hidden', found.role === 'viewer');
+      $('date').max = todayIST();
+      $('loginView').classList.add('hidden');
+      $('appView').classList.remove('hidden');
+      loadedDate = null;
+      onRoute();
+      startTimer();
+    }
+
+    $('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!db) return;
+      $('loginBtn').disabled = true;
+      $('loginError').textContent = '';
+      const { error } = await db.auth.signInWithPassword({ email: loginEmail($('email').value), password: $('password').value });
+      $('loginBtn').disabled = false;
+      if (error) {
+        $('loginError').textContent = 'Wrong login or password.';
+        return;
+      }
+      $('password').value = '';
+      await showApp();
+    });
+
+    $('logoutBtn').addEventListener('click', async () => {
+      await db.auth.signOut();
+      showLogin('');
+    });
+
+    // Start: go straight to the page if already logged in
+    (async () => {
+      if (!configured) {
+        showLogin('Open this file and paste your Supabase URL and publishable key at the top of the script.');
+        return;
+      }
+      const { data: { session } } = await db.auth.getSession();
+      if (session) await showApp(); else showLogin('');
+    })();
+  </script>
+</body>
+</html>

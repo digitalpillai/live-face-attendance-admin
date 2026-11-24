@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- index.html | Version: V8
+<!-- index.html | Version: V10
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
@@ -19,6 +19,16 @@
      V8: Reports tab: monthly register (P, Late, Half day, Absent, Week off, Holiday, paid days), monthly summary,
          late and early report, staff list; on screen and as Excel. Holidays list. Default working hours in Settings,
          own hours per showroom, weekly off per employee (Staff tab). Needs 12_reports_and_hours.sql.
+     V9: Leave tab: staff ask for leave or permission in the app (1.2.0 or newer) and HR approve or reject here, or
+         add it for a person directly. The register shows approved leave (CL, SL, EL, CO = paid, LOP = loss of pay)
+         and paid days count paid leave; a permission covers a late arrival or an early exit. The Attendance tab
+         shows On leave, Week off and Holiday. View-only logins for the CEO (HR logins tab) and a link to the live
+         page of all showrooms (ceo.html). Needs 13_leave_and_live.sql and the admin-users function V5.
+     V10: Teams: each person's Role (Staff, Team manager, Showroom manager) and Reports to, in the Staff tab. Team managers
+         and showroom managers log in here with their mobile number and app password and see only their team: add
+         staff, edit, weekly off, make inactive, approve or reject leave and permission. "Same face on two logins" list
+         with Reset face. Check-in reminder settings (Settings tab). Needs 14_teams_faces_reminders.sql and
+         admin-users V6.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -109,6 +119,17 @@
     table.register th.wk { color: var(--red); }
     table.register td.tot { font-weight: 600; background: #f8fafc; }
     select.wo-select { width: auto; padding: 4px 6px; font-size: 13px; }
+    select.role-select, select.boss-select { width: auto; max-width: 210px; padding: 4px 6px; font-size: 13px; }
+    #staffRows td.actions { white-space: normal; min-width: 200px; }
+    #staffRows td.soft { white-space: normal; min-width: 90px; max-width: 170px; }
+    .team-boss { margin-top: 6px; font-size: 13px; color: var(--muted); }
+    .b-blue { background: #dbeafe; color: #1d4ed8; }
+    .b-purple { background: #f3e8ff; color: #7e22ce; }
+    table.register td.c-LV { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
+    table.register td.c-LOP { background: #fce7f3; color: #9d174d; font-weight: 600; }
+    header a.hlink { color: #fff; border: 1px solid rgba(255, 255, 255, .55); border-radius: 8px; padding: 8px 12px;
+      text-decoration: none; font-size: 14px; white-space: nowrap; }
+    header a.hlink:hover { background: rgba(255, 255, 255, .12); }
   </style>
 </head>
 <body>
@@ -117,8 +138,8 @@
     <div class="card login">
       <h2>Live Face Attendance - Admin</h2>
       <form id="loginForm">
-        <label for="email">Email</label>
-        <input id="email" type="email" autocomplete="username" required>
+        <label for="email">Email or mobile number</label>
+        <input id="email" type="text" autocomplete="username" required>
         <label for="password">Password</label>
         <input id="password" type="password" autocomplete="current-password" required>
         <div style="margin-top:14px"><button id="loginBtn" type="submit">Log in</button></div>
@@ -133,16 +154,18 @@
       <h1>Live Face Attendance - Admin</h1>
       <div class="row" style="align-items:center">
         <span id="who" class="who"></span>
+        <a id="liveLink" class="hlink" href="ceo.html" title="Live attendance of all showrooms (the CEO page)">Live attendance</a>
         <button id="logoutBtn" class="secondary" type="button">Log out</button>
       </div>
     </header>
     <nav class="tabs">
       <button type="button" data-tab="attendance" class="active">Attendance</button>
       <button type="button" data-tab="reports">Reports</button>
-      <button type="button" data-tab="activity">Activity</button>
-      <button type="button" data-tab="support">Support <span id="supportCount" class="badge b-red hidden"></span></button>
+      <button type="button" data-tab="leave">Leave <span id="leaveCount" class="badge b-red hidden"></span></button>
+      <button type="button" data-tab="activity" data-no-manager>Activity</button>
+      <button type="button" data-tab="support" data-no-manager>Support <span id="supportCount" class="badge b-red hidden"></span></button>
       <button type="button" data-tab="staff">Staff</button>
-      <button type="button" data-tab="showrooms">Showrooms</button>
+      <button type="button" data-tab="showrooms" data-no-manager>Showrooms</button>
       <button type="button" data-tab="users" data-master-only>HR logins</button>
       <button type="button" data-tab="settings" data-master-only>Settings</button>
     </nav>
@@ -239,7 +262,7 @@
 
       <div class="card">
         <h2 id="holTitle">Holidays</h2>
-        <div class="row">
+        <div class="row" id="holAddRow">
           <div><label for="holDate">Date</label><input id="holDate" type="date"></div>
           <div style="flex:2 1 240px"><label for="holName">Holiday name</label><input id="holName" type="text" placeholder="e.g. Pongal"></div>
           <div><label for="holShowroom">For</label><select id="holShowroom"></select></div>
@@ -254,6 +277,78 @@
         </div>
         <p class="muted">Holidays show as H in the register and are not counted as absent. The master admin can add
           holidays for all showrooms; HR can add holidays for their own showrooms.</p>
+      </div>
+    </main>
+
+    <!-- ---------- Leave and permission ---------- -->
+    <main id="tab-leave" class="hidden">
+      <div id="sql13Notice" class="card hidden" style="border-color:var(--red)"></div>
+
+      <div class="card">
+        <h2>Waiting for approval <span id="pendingCount" class="muted"></span></h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Asked on</th><th>Employee</th><th>Showroom</th><th>Leave / permission</th><th>Reason</th><th>Actions</th></tr></thead>
+            <tbody id="pendingRows"></tbody>
+          </table>
+        </div>
+        <div id="pendingMsg" class="msg"></div>
+        <p class="muted">Staff ask for leave or permission in the phone app (version 1.2.0 or newer). Approve or reject here;
+          they see the answer in the app. When you reject, write the reason: the person sees it.</p>
+      </div>
+
+      <div class="card">
+        <h2>Add leave or permission for a staff member</h2>
+        <div class="row">
+          <div><label for="lvShowroom">Showroom</label><select id="lvShowroom"></select></div>
+          <div style="flex:2 1 240px"><label for="lvEmployee">Employee *</label><select id="lvEmployee"></select></div>
+          <div><label for="lvKind">What *</label>
+            <select id="lvKind"><option value="leave">Leave (whole days)</option><option value="permission">Permission (a few hours)</option></select></div>
+        </div>
+        <div class="row">
+          <div class="lv-leave"><label for="lvType">Type of leave *</label><select id="lvType"></select></div>
+          <div><label for="lvFrom" id="lvFromLabel">From date *</label><input id="lvFrom" type="date"></div>
+          <div class="lv-leave"><label for="lvTo">To date *</label><input id="lvTo" type="date"></div>
+          <div class="lv-perm hidden"><label for="lvFromTime">From time *</label><input id="lvFromTime" type="time"></div>
+          <div class="lv-perm hidden"><label for="lvToTime">To time *</label><input id="lvToTime" type="time"></div>
+        </div>
+        <div class="row">
+          <div style="flex:3 1 320px"><label for="lvReason">Reason *</label>
+            <input id="lvReason" type="text" maxlength="300" placeholder="e.g. Phoned in sick"></div>
+          <div style="flex:0 0 auto"><button id="lvAddBtn" type="button">Add (approved)</button></div>
+        </div>
+        <div id="lvMsg" class="msg"></div>
+        <p class="muted">For when someone cannot ask in the app, for example when they phone in sick. It is saved as approved
+          at once. Leave: up to 31 days in one go, up to 3 months back. Permission: up to 4 hours on one day.</p>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div><label for="lvMonth">Month</label><input id="lvMonth" type="month"></div>
+          <div><label for="lvListShowroom">Showroom</label><select id="lvListShowroom"></select></div>
+          <div><label for="lvStatus">Show</label>
+            <select id="lvStatus">
+              <option value="">All</option>
+              <option value="approved">Approved</option>
+              <option value="pending">Waiting for approval</option>
+              <option value="rejected">Rejected</option>
+              <option value="cancelled">Cancelled</option>
+            </select></div>
+          <div style="flex:0 0 auto"><button id="lvLoadBtn" type="button">Show</button></div>
+        </div>
+      </div>
+      <div class="chips" id="lvChips"></div>
+      <div class="card">
+        <h2 id="lvListTitle">Leave and permission</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Employee</th><th>Showroom</th><th>Leave / permission</th><th>Days</th><th>Reason</th><th>Status</th><th></th></tr></thead>
+            <tbody id="lvRows"></tbody>
+          </table>
+        </div>
+        <div id="lvListMsg" class="msg"></div>
+        <p class="muted">Every request that touches the chosen month. Approved leave shows in the monthly register
+          (CL, SL, EL, CO = paid leave; LOP = loss of pay) and on the live attendance page. Cancel takes it out again.</p>
       </div>
     </main>
 
@@ -331,6 +426,10 @@
 
     <!-- ---------- Staff ---------- -->
     <main id="tab-staff" class="hidden">
+      <div id="sql14Notice" class="card hidden" style="border-color:var(--red)">
+        <b>One step is missing in Supabase.</b> Run <b>14_teams_faces_reminders.sql</b> in Supabase (SQL Editor) to switch on
+        teams (Role and Reports to), manager logins, "one face, one login" and the check-in reminders. Then press Ctrl+F5 on this page.
+      </div>
       <div id="sqlNotice" class="card hidden" style="border-color:var(--red)">
         <b>One step is missing in Supabase.</b> Run <b>09_employee_details.sql</b> in Supabase (SQL Editor) to save
         employee code, designation and email, and to keep the upload log. Then press Ctrl+F5 on this page.
@@ -347,12 +446,16 @@
           <div><label for="newCode">Employee code</label><input id="newCode" type="text"></div>
           <div><label for="newEmail">Email ID</label><input id="newEmail" type="email"></div>
           <div><label for="newWeeklyOff">Weekly off</label><select id="newWeeklyOff"></select></div>
+        </div>
+        <div class="row">
+          <div id="newRoleBox"><label for="newRole">Role</label><select id="newRole"></select></div>
+          <div id="newReportsBox" style="flex:2 1 260px"><label for="newReportsTo">Reports to</label><select id="newReportsTo"></select></div>
           <div style="flex:0 0 auto"><button id="addEmpBtn" type="button">Add employee</button></div>
         </div>
         <p class="muted">* required. They log in to the app with their mobile number. Their first password is also their mobile number.</p>
         <div id="staffMsg" class="msg"></div>
       </div>
-      <div class="card">
+      <div class="card" id="bulkCard">
         <h2>Add many employees (Excel upload)</h2>
         <p class="muted">Use the staff Excel template with these headings: <b>S.NO</b>, Employee Code, <b>Employee Name</b>,
           <b>Designation</b>, <b>Mobile Number</b>, Email ID (bold = required). Rows without a 10-digit mobile number,
@@ -382,7 +485,7 @@
         <p class="muted">Each person's username and first password are their mobile number. People who already have a login
           are skipped, so if some rows fail you can simply upload the same file again.</p>
       </div>
-      <div class="card">
+      <div class="card" id="importCard">
         <h2>Upload log</h2>
         <div class="table-wrap">
           <table>
@@ -400,12 +503,28 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Employee</th><th>Designation</th><th>Showroom</th><th>Weekly off</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Employee</th><th>Designation</th><th>Showroom</th><th>Team</th><th>Weekly off</th><th>Face</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody id="staffRows"></tbody>
           </table>
         </div>
         <p class="muted">Staff who leave: click Edit and untick "Active". Their attendance history is kept.
-          Weekly off: choose the day in the list; it is saved at once and used in the monthly register.</p>
+          Weekly off: choose the day in the list; it is saved at once and used in the monthly register.
+          Role and Reports to: each person reports to one team manager (or straight to the showroom manager), and each team
+          manager to the showroom manager of the same showroom. Saved at once. Managers log in to this page with their
+          mobile number and see only their team.</p>
+      </div>
+      <div class="card hidden" id="dupCard" style="border-color:var(--orange)">
+        <h2>Same face on two logins</h2>
+        <p class="muted">The same face is registered on these two logins (mobile numbers). One face may be registered on only one
+          login: reset the face of the wrong one (registered by mistake, or by someone else). New registrations like this are
+          refused by themselves.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Login 1</th><th>Login 2</th><th>Face match</th></tr></thead>
+            <tbody id="dupRows"></tbody>
+          </table>
+        </div>
+        <div id="dupMsg" class="msg"></div>
       </div>
     </main>
 
@@ -496,6 +615,31 @@
         </div>
         <div id="hrListMsg" class="msg"></div>
       </div>
+      <div class="card">
+        <h2 id="vwFormTitle">Add a view-only login (for the CEO)</h2>
+        <input id="vwUserId" type="hidden">
+        <div class="row">
+          <div><label for="vwName">Name *</label><input id="vwName" type="text" placeholder="e.g. CEO"></div>
+          <div><label for="vwLogin">Login (email) *</label><input id="vwLogin" type="email" placeholder="ceo@pillaimotors.in"></div>
+          <div><label for="vwMobile">Mobile number</label><input id="vwMobile" type="tel" maxlength="10" inputmode="numeric"></div>
+          <div><label for="vwPassword" id="vwPasswordLabel">Password * (8 or more characters)</label>
+            <input id="vwPassword" type="text" autocomplete="off" spellcheck="false"></div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:0 0 auto"><button id="saveVwBtn" type="button">Add view-only login</button></div>
+          <div style="flex:0 0 auto"><button id="cancelVwBtn" type="button" class="secondary hidden">Cancel editing</button></div>
+        </div>
+        <p class="muted">A view-only login opens the live attendance page and sees the attendance, leave and permissions of
+          every showroom. It cannot change anything and cannot open this dashboard. The login does not need to be a real mailbox.</p>
+        <div id="vwMsg" class="msg"></div>
+        <div class="table-wrap" style="margin-top:8px">
+          <table>
+            <thead><tr><th>Name</th><th>Login</th><th>Mobile</th><th>Actions</th></tr></thead>
+            <tbody id="vwRows"></tbody>
+          </table>
+        </div>
+        <div id="vwListMsg" class="msg"></div>
+      </div>
     </main>
 
     <!-- ---------- Settings ---------- -->
@@ -523,6 +667,20 @@
           grace time before closing. A showroom can have its own hours (Showrooms tab, Edit).</p>
         <button id="saveHoursBtn" type="button">Save working hours</button>
         <div id="hoursMsg" class="msg"></div>
+      </div>
+      <div class="card" style="max-width:560px">
+        <h2>Check-in reminder on the phone</h2>
+        <label class="check"><input id="remOn" type="checkbox"> Ring a reminder when someone has not checked in</label>
+        <div class="row">
+          <div><label for="remTime">First reminder at</label><input id="remTime" type="time"></div>
+          <div><label for="remCount">Number of reminders</label><input id="remCount" type="number" min="1" max="6" step="1"></div>
+          <div><label for="remGap">Minutes between them</label><input id="remGap" type="number" min="1" max="60" step="1"></div>
+        </div>
+        <p class="muted">The phone rings like an alarm (app 1.3.0 or newer) on working days when the person has not checked in:
+          not on their weekly off, holidays, approved leave, or during an approved permission. The reminders stop as soon as
+          they check in.</p>
+        <button id="saveRemBtn" type="button">Save reminder</button>
+        <div id="remMsg" class="msg"></div>
       </div>
     </main>
   </div>
@@ -590,6 +748,19 @@
     <div id="repMsg" class="msg"></div>
   </dialog>
 
+  <!-- ---------- Approve / reject / cancel a leave request pop-up ---------- -->
+  <dialog id="lvDialog">
+    <h2 id="lvDlgTitle">Leave request</h2>
+    <p id="lvDlgText"></p>
+    <label for="lvDlgNote" id="lvDlgNoteLabel">Note (optional)</label>
+    <input id="lvDlgNote" type="text" maxlength="300">
+    <div class="row" style="margin-top:14px">
+      <div style="flex:0 0 auto"><button id="lvDlgOk" type="button">OK</button></div>
+      <div style="flex:0 0 auto"><button id="lvDlgClose" type="button" class="secondary">Close</button></div>
+    </div>
+    <div id="lvDlgMsg" class="msg"></div>
+  </dialog>
+
   <script>
     // ---- Your two Supabase values (keep the quote marks) ----
     const SUPABASE_URL = 'https://gtfpfdpzochswytajkhk.supabase.co';
@@ -600,7 +771,7 @@
 
     const $ = (id) => document.getElementById(id);
     const DAY_MS = 24 * 60 * 60 * 1000;
-    const TABS = ['attendance', 'reports', 'activity', 'support', 'staff', 'showrooms', 'users', 'settings'];
+    const TABS = ['attendance', 'reports', 'leave', 'activity', 'support', 'staff', 'showrooms', 'users', 'settings'];
     let currentTab = 'attendance';
     let showrooms = [];
     let employees = [];
@@ -608,6 +779,16 @@
     let access = { role: 'master', showroom_ids: [] }; // after login: the master admin, or HR with their showrooms
     let needsSql10 = false;                             // true until 10_roles_and_showrooms.sql has been run
     const isMaster = () => access.role === 'master';
+    const isManager = () => access.role === 'manager';            // a team manager or showroom manager (their team only)
+    const isShowroomManager = () => isManager() && access.team_role === 'showroom_manager';
+    const allLabel = () => (isMaster() ? 'All showrooms' : isManager() ? 'My team' : 'All my showrooms');
+
+    // Managers log in with their mobile number, like in the app (the login behind it is <mobile>@pillaimotors.in)
+    const loginEmail = (typed) => {
+      const t = String(typed || '').trim();
+      const digits = t.replace(/[\s-]/g, '').replace(/^\+?91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, '');
+      return /^\d{10}$/.test(digits) ? digits + '@pillaimotors.in' : t.toLowerCase();
+    };
     // The showrooms this login may see and manage (HR: only their own)
     const myShowrooms = () => (isMaster() ? showrooms : showrooms.filter((s) => access.showroom_ids.includes(s.id)));
 
@@ -694,11 +875,23 @@
     // Employees, page by page (there can be more than 1000). Works before 09 and 12 are run too.
     let needsSql09 = false;
     let needsSql12 = false; // true until 12_reports_and_hours.sql has been run
+    let needsSql14 = false; // true until 14_teams_faces_reminders.sql has been run
     async function loadEmployees() {
       const base = 'id, full_name, phone, is_active, showroom_id, face_registered_at';
       const details = ', employee_code, designation, email'; // 09_employee_details.sql
       const reports = ', weekly_off, created_at';           // 12_reports_and_hours.sql
+      const team = ', team_role, reports_to';               // 14_teams_faces_reminders.sql
       const read = (columns) => fetchAll(() => db.from('employees').select(columns).order('id'));
+      try {
+        const rows = await read(base + details + reports + team);
+        needsSql09 = false;
+        needsSql12 = false;
+        needsSql14 = false;
+        return rows;
+      } catch (err) {
+        if (err.code !== '42703') throw err;
+      }
+      needsSql14 = true;
       try {
         const rows = await read(base + details + reports);
         needsSql09 = false;
@@ -740,7 +933,7 @@
       // Showroom filter on the Reports tab, and the "For" list of holidays
       const rptSr = $('rptShowroom');
       const currentRpt = rptSr.value;
-      rptSr.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
+      rptSr.innerHTML = `<option value="">${allLabel()}</option>` + showroomOptions();
       rptSr.value = currentRpt;
       const holSr = $('holShowroom');
       const currentHol = holSr.value;
@@ -756,14 +949,14 @@
       // Showroom filter on the Attendance tab
       const filter = $('showroom');
       const currentFilter = filter.value;
-      filter.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
+      filter.innerHTML = `<option value="">${allLabel()}</option>` + showroomOptions();
       filter.value = currentFilter;
 
       // Showroom filters on the Activity and Support tabs
       for (const id of ['actShowroom', 'supShowroom']) {
         const sel = $(id);
         const current = sel.value;
-        sel.innerHTML = `<option value="">${isMaster() ? 'All showrooms' : 'All my showrooms'}</option>` + showroomOptions();
+        sel.innerHTML = `<option value="">${allLabel()}</option>` + showroomOptions();
         sel.value = current;
       }
 
@@ -772,6 +965,8 @@
       const currentNew = newSr.value;
       newSr.innerHTML = showroomOptions();
       if (currentNew) newSr.value = currentNew;
+
+      fillNewTeam();
 
       // Showroom choice in "Add many employees"
       const bulkSr = $('bulkShowroom');
@@ -821,8 +1016,21 @@
     }
 
     const BADGE = {
-      'In showroom': 'b-green', 'Checked out': 'b-grey', 'Absent': 'b-red', 'No check-out': 'b-orange'
+      'In showroom': 'b-green', 'Checked out': 'b-grey', 'Absent': 'b-red', 'No check-out': 'b-orange',
+      'On leave': 'b-blue', 'Week off': 'b-grey', 'Holiday': 'b-grey'
     };
+
+    // Everyone's leave / week off / holiday / permission on one day (13_leave_and_live.sql). Without it: empty.
+    async function loadDayStatus(dateStr) {
+      try {
+        const rows = await fetchAll(() => db.rpc('day_attendance', { p_day: dateStr }));
+        needsSql13 = false;
+        return new Map(rows.map((r) => [r.employee_id, r]));
+      } catch (err) {
+        if (missingTable(err)) needsSql13 = true;
+        return new Map();
+      }
+    }
 
     // ======================= Attendance tab =======================
     async function refresh() {
@@ -831,15 +1039,31 @@
       try {
         await loadBase();
         const dateStr = $('date').value || todayIST();
-        const logs = await loadLogs(dateStr, dateStr);
+        const [logs, day] = await Promise.all([loadLogs(dateStr, dateStr), loadDayStatus(dateStr)]);
         const staff = visibleEmployees();
 
-        const counts = { 'In showroom': 0, 'Checked out': 0, 'Absent': 0, 'No check-out': 0 };
+        const counts = { 'In showroom': 0, 'Checked out': 0, 'Absent': 0, 'No check-out': 0, 'On leave': 0, 'Week off': 0, 'Holiday': 0 };
         let noFace = 0;
+        let permissions = 0;
         const html = staff.map((emp) => {
           const mine = logs.filter((l) => l.employee_id === emp.id);
           const s = summarize(mine, dateStr);
+          const d = day.get(emp.id);
+          if (s.status === 'Absent' && d) {
+            if (d.status === 'leave') s.status = 'On leave';
+            else if (d.status === 'week_off') s.status = 'Week off';
+            else if (d.status === 'holiday') s.status = 'Holiday';
+          }
           counts[s.status]++;
+          if (d?.permission_from) permissions++;
+          const extra = [
+            s.status === 'On leave' && d.leave_type ? ` · ${escapeHtml(d.leave_type)}` : '',
+            s.status === 'Holiday' && d.holiday_name ? ` · ${escapeHtml(d.holiday_name)}` : '',
+          ].join('');
+          const more = [
+            d?.permission_from ? `<span class="badge b-purple">Permission ${minText(toMin(d.permission_from))} to ${minText(toMin(d.permission_to))}</span>` : '',
+            s.status === 'Absent' && d?.waiting ? `<span class="badge b-grey">${d.waiting.includes('leave') ? 'Leave asked' : 'Permission asked'}</span>` : '',
+          ].filter(Boolean).join('<br>');
           if (!emp.face_registered_at) noFace++;
           const entries = mine.map((l) =>
             `<span class="entry${l.cancelled_at ? ' cancelled' : ''}">` +
@@ -848,7 +1072,7 @@
             <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span>
               ${emp.face_registered_at ? '' : '<br><span class="badge b-orange">Face not registered</span>'}</td>
             <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
-            <td><span class="badge ${BADGE[s.status]}">${s.status}</span></td>
+            <td><span class="badge ${BADGE[s.status]}">${s.status}${extra}</span>${more ? '<br>' + more : ''}</td>
             <td>${s.firstIn ? timeIST(s.firstIn) : '-'}</td>
             <td>${s.lastOut ? timeIST(s.lastOut) : '-'}</td>
             <td>${s.ms ? hours(s.ms) : '-'}</td>
@@ -868,6 +1092,9 @@
           ['Checked out', counts['Checked out']],
           ['Absent', counts['Absent']],
           ['No check-out', counts['No check-out']],
+          ['On leave', counts['On leave']],
+          ['Week off / holiday', counts['Week off'] + counts['Holiday']],
+          ['Permission', permissions],
           ['Face not registered', noFace],
         ].map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
       } catch (err) {
@@ -941,7 +1168,9 @@
       } catch (err) {
         setMsg('staffMsg', 'Could not load staff: ' + (err.message || err), false);
       }
-      renderImportLog();
+      if (!isManager()) renderImportLog();
+      renderDuplicates();
+      $('sql14Notice').classList.toggle('hidden', !(isMaster() && needsSql14 && !needsSql12 && !needsSql09));
     }
 
     // The staff table, filtered by the search box
@@ -954,27 +1183,60 @@
       });
       $('staffCount').textContent = shown.length === employees.length
         ? `${employees.length} staff` : `Showing ${shown.length} of ${employees.length}`;
-      $('staffRows').innerHTML = shown.map((emp) => `<tr>
-          <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}${
+      $('staffRows').innerHTML = shown.map((emp) => {
+        const me = isManager() && emp.id === access.employee_id;  // a manager's own row: HR change it
+        return `<tr>
+          <td><b>${escapeHtml(emp.full_name)}</b>${me ? ' <span class="badge b-blue">You</span>' : ''}<br><span class="muted">${escapeHtml(emp.phone)}${
             emp.employee_code ? ' · Code ' + escapeHtml(emp.employee_code) : ''}</span></td>
-          <td>${escapeHtml(emp.designation || '-')}</td>
-          <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
-          <td>${needsSql12 ? '<span class="muted">-</span>'
+          <td class="soft">${escapeHtml(emp.designation || '-')}</td>
+          <td class="soft">${escapeHtml(showroomName(emp.showroom_id))}</td>
+          <td>${teamCell(emp, me)}</td>
+          <td>${needsSql12 ? '<span class="muted">-</span>' : me ? escapeHtml(emp.weekly_off != null ? DAY_NAMES[emp.weekly_off] : '-')
               : `<select class="wo-select" data-id="${emp.id}" aria-label="Weekly off">${weeklyOffOptions(emp.weekly_off)}</select>`}</td>
           <td>${emp.face_registered_at
               ? '<span class="badge b-green">Registered</span><br><span class="muted">' + dateIST(emp.face_registered_at) + '</span>'
               : '<span class="badge b-orange">Not registered</span>'}</td>
           <td>${emp.is_active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-grey">Inactive</span>'}</td>
-          <td class="actions">
-            <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>
+          <td class="actions">${me ? '' : `
+            <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>${isManager() ? '' : `
             <button type="button" class="secondary" data-act="activity" data-id="${emp.id}">Activity</button>
             <button type="button" class="secondary" data-act="face" data-id="${emp.id}">Reset face</button>
-            <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>
-            ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}
+            <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>`}
+            ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}`}
           </td>
-        </tr>`).join('') || `<tr><td colspan="7" class="muted">${employees.length ? 'Nobody matches the search.' : 'No staff yet.'}</td></tr>`;
+        </tr>`;
+      }).join('') || `<tr><td colspan="8" class="muted">${employees.length ? 'Nobody matches the search.' : 'No staff yet.'}</td></tr>`;
     }
     $('staffSearch').addEventListener('input', drawStaff);
+
+    // Role and Reports to: saved as soon as they are chosen (14_teams_faces_reminders.sql)
+    $('staffRows').addEventListener('change', async (e) => {
+      const sel = e.target.closest('select.role-select, select.boss-select');
+      if (!sel) return;
+      const emp = employees.find((x) => String(x.id) === sel.dataset.id);
+      if (!emp) return;
+      let role = emp.team_role || 'staff';
+      let boss = emp.reports_to ?? null;
+      if (sel.classList.contains('role-select')) {
+        role = sel.value;
+        const b = employees.find((x) => x.id === boss);
+        if (!b || !bossLevels(role).includes(b.team_role)) boss = null;  // the old manager does not fit the new role
+      } else {
+        boss = sel.value === '' ? null : Number(sel.value);
+      }
+      sel.disabled = true;
+      try {
+        await rpc('set_team', { p_employee_id: emp.id, p_team_role: role, p_reports_to: boss });
+        await loadBase();
+        drawStaff();
+        const b = employees.find((x) => x.id === boss);
+        setMsg('staffMsg', `${emp.full_name}: ${ROLE_NAMES[role]}${role === 'showroom_manager' ? ''
+          : b ? `, reports to ${b.full_name}` : ', reports to nobody yet'}.`, true);
+      } catch (err) {
+        drawStaff();
+        setMsg('staffMsg', err.message || String(err), false);
+      }
+    });
 
     // Weekly off: saved as soon as a day is chosen
     $('staffRows').addEventListener('change', async (e) => {
@@ -1015,9 +1277,13 @@
       $('addEmpBtn').disabled = true;
       setMsg('staffMsg', 'Adding…', true);
       try {
+        const team = needsSql14 ? {} : {
+          team_role: $('newRole').value || 'staff',
+          reports_to: $('newReportsTo').value ? Number($('newReportsTo').value) : null,
+        };
         await callAdminUsers({
           action: 'create', full_name: name, phone, showroom_id: showroomId,
-          designation, employee_code: code, email,
+          designation, employee_code: code, email, ...team,
         });
         let note = '';
         const weeklyOff = $('newWeeklyOff').value;
@@ -1032,7 +1298,10 @@
         }
         for (const id of ['newName', 'newPhone', 'newDesignation', 'newCode', 'newEmail', 'newWeeklyOff']) $(id).value = '';
         await renderStaff();
-        setMsg('staffMsg', `${name} added. Their login and first password: ${phone}.${note}`, !note);
+        const boss = employees.find((x) => x.phone === phone)?.reports_to;
+        const bossName = boss ? employees.find((x) => x.id === boss)?.full_name : null;
+        setMsg('staffMsg', `${name} added${bossName ? ` (reports to ${bossName})` : ''}. ` +
+          `Their login and first password: ${phone}.${note}`, !note);
       } catch (err) {
         setMsg('staffMsg', err.message || String(err), false);
       } finally {
@@ -1839,6 +2108,7 @@
       } catch (err) {
         setMsg('hrListMsg', 'Could not load HR logins: ' + (err.message || err), false);
       }
+      await renderViewers();
     }
 
     function resetHrForm() {
@@ -2057,13 +2327,22 @@
       ]);
       if (holidaysRes.error) throw holidaysRes.error;
       const byKey = new Map(summary.map((r) => [r.employee_id + '|' + r.day, r]));
+      // Approved leave and permission in this month (13_leave_and_live.sql; none before it is run)
+      const leaves = await loadLeave((q) => q.eq('status', 'approved').lte('from_date', to).gte('to_date', from));
+      const leaveByKey = new Map();
+      const permByKey = new Map();
+      for (const r of leaves) {
+        if (r.kind === 'permission') { permByKey.set(r.employee_id + '|' + r.from_date, r); continue; }
+        for (const d of dates) if (d >= r.from_date && d <= r.to_date) leaveByKey.set(r.employee_id + '|' + d, r);
+      }
       const came = new Set(summary.map((r) => r.employee_id));
       const staff = employees
         .filter((e) => !showroomId || e.showroom_id === showroomId)
         .filter((e) => came.has(e.id) || (e.is_active && (!e.created_at || ymd(new Date(e.created_at)) <= to)))
         .sort(byShowroomThenName);
       const scopeIds = showroomId ? [showroomId] : myShowrooms().map((x) => x.id);
-      return { month, label: `${MONTH_NAMES[m - 1]} ${y}`, dates, staff, byKey, holidays: holidaysRes.data, today: todayIST(), scopeIds };
+      return { month, label: `${MONTH_NAMES[m - 1]} ${y}`, dates, staff, byKey, holidays: holidaysRes.data, today: todayIST(), scopeIds,
+        leaveByKey, permByKey };
     }
 
     // What one person did on one day
@@ -2072,6 +2351,8 @@
       const row = ctx.byKey.get(emp.id + '|' + date);
       const holiday = ctx.holidays.find((h) => h.holiday_date === date && (h.showroom_id == null || h.showroom_id === emp.showroom_id));
       const off = holiday ? 'H' : (emp.weekly_off != null && weekdayOf(date) === emp.weekly_off ? 'WO' : null);
+      const leave = ctx.leaveByKey.get(emp.id + '|' + date);
+      const perm = ctx.permByKey.get(emp.id + '|' + date);
 
       if (row && (row.first_in || row.last_out)) {
         const sh = shiftOf(emp.showroom_id);
@@ -2090,27 +2371,40 @@
           half: worked != null && worked < workSettings.half_day_hours * 60,
           noIn: !row.first_in,
           noOut: !hasOut && dayOver,
+          perm,
         };
+        // An approved permission covers a late arrival or an early exit
+        if (perm) {
+          const pFrom = toMin(perm.from_time);
+          const pTo = toMin(perm.to_time);
+          if (info.late && pFrom <= sh.start + grace && pTo >= inMin - grace) { info.late = false; info.lateCovered = true; }
+          if (info.early && pTo >= sh.end - grace && pFrom <= outMin + grace) { info.early = false; info.earlyCovered = true; }
+        }
         info.code = (info.half ? 'HD' : info.late ? 'L' : 'P') + (info.noIn || info.noOut ? '*' : '');
         return info;
       }
       const joined = emp.created_at ? ymd(new Date(emp.created_at)) : null;
       if ((joined && date < joined) || !emp.is_active) return { code: '–' };
-      if (off) return { code: off, holidayName: holiday?.name };
-      if (date === ctx.today) return { code: '' };  // the day is not over
-      return { code: 'A' };
+      if (off) return { code: off, holidayName: holiday?.name, perm };
+      if (leave) return { code: leave.leave_type, leave: true, leaveType: leave.leave_type };
+      if (date === ctx.today) return { code: '', perm };  // the day is not over
+      return { code: 'A', perm };
     }
 
     // A person's whole month: every day plus the totals
     function monthOf(ctx, emp) {
-      const t = { P: 0, L: 0, HD: 0, A: 0, WO: 0, H: 0, lateDays: 0, earlyDays: 0, noOut: 0, workedMin: 0, workedDays: 0,
-        inSum: 0, inDays: 0, outSum: 0, outDays: 0, offWorked: 0, workingDays: 0, cells: [] };
+      const t = { P: 0, L: 0, HD: 0, A: 0, WO: 0, H: 0, LV: 0, LOP: 0, perms: 0, lateDays: 0, earlyDays: 0, noOut: 0,
+        workedMin: 0, workedDays: 0, inSum: 0, inDays: 0, outSum: 0, outDays: 0, offWorked: 0, workingDays: 0, cells: [] };
       for (const date of ctx.dates) {
         const info = dayInfo(ctx, emp, date);
         info.date = date;
         t.cells.push(info);
         const base = (info.code || '').replace('*', '');
-        if (base in t) t[base]++;
+        if (info.leave) {
+          t.LV++;
+          if (info.leaveType === 'LOP') t.LOP++;
+        } else if (base in t) t[base]++;
+        if (info.perm && date <= ctx.today) t.perms++;
         if (info.present) {
           if (info.late) t.lateDays++;
           if (info.early) t.earlyDays++;
@@ -2120,17 +2414,21 @@
           if (info.outMin != null) { t.outSum += info.outMin; t.outDays++; }
           if (info.off) t.offWorked++;
         }
-        if (['P', 'L', 'HD', 'A'].includes(base) && !info.off) t.workingDays++;
+        if ((['P', 'L', 'HD', 'A'].includes(base) && !info.off) || info.leave) t.workingDays++;
       }
       t.present = t.P + t.L;
-      t.paid = t.P + t.L + t.HD * 0.5 + t.WO + t.H;
+      t.paidLeave = t.LV - t.LOP;
+      t.paid = t.P + t.L + t.HD * 0.5 + t.paidLeave + t.WO + t.H;
       return t;
     }
 
+    const permText = (p) => `Permission ${minText(toMin(p.from_time))} to ${minText(toMin(p.to_time))}`;
     function dayNote(c) {
       return [
         c.late ? `Late ${c.lateBy} min` : '',
         c.early ? `Left early ${c.earlyBy} min` : '',
+        c.perm ? permText(c.perm) + (c.lateCovered ? ' (covers the late arrival)' : '') +
+          (c.earlyCovered ? ' (covers the early exit)' : '') : '',
         c.half ? 'Half day' : '',
         c.noIn ? 'No check-in' : '',
         c.noOut ? 'No check-out' : '',
@@ -2139,13 +2437,16 @@
     }
 
     function cellTitle(c) {
-      if (!c.present) return c.holidayName ? 'Holiday: ' + c.holidayName : '';
+      if (c.leave) return LEAVE_TYPES[c.leaveType] || 'Leave';
+      if (!c.present) return [c.holidayName ? 'Holiday: ' + c.holidayName : '', c.perm ? permText(c.perm) : ''].filter(Boolean).join(' · ');
       return [c.inMin != null ? 'In ' + minText(c.inMin) : '', c.outMin != null ? 'Out ' + minText(c.outMin) : '',
         c.worked != null ? hm(c.worked) : '', dayNote(c)].filter(Boolean).join(' · ');
     }
 
     const codeClass = (code) => {
       const base = (code || '').replace('*', '');
+      if (base === 'LOP') return 'c-LOP';
+      if (['CL', 'SL', 'EL', 'CO'].includes(base)) return 'c-LV';
       return ['P', 'L', 'HD', 'A', 'WO', 'H'].includes(base) ? 'c-' + base : '';
     };
 
@@ -2167,12 +2468,14 @@
         `half day = worked under ${workSettings.half_day_hours} h.`;
     };
     const LEGEND = () => `P = present, L = late, HD = half day (under ${workSettings.half_day_hours} h), A = absent, ` +
+      'CL / SL / EL / CO = paid leave (casual, sick, earned, comp off), LOP = loss of pay, ' +
       'WO = weekly off, H = holiday, * = check-in or check-out missing (counted as present), – = not joined yet or inactive. ' +
-      'Paid days = Present + Late + ½ × Half day + Week off + Holiday, up to today. Point at a day to see the times.';
+      'A late arrival or early exit covered by an approved permission is not marked. ' +
+      'Paid days = Present + Late + ½ × Half day + Paid leave + Week off + Holiday, up to today. Point at a day to see the times.';
     const madeOn = () => 'Made on ' + new Date().toLocaleString('en-IN', {
       timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit'
     });
-    const placeName = (showroomId) => showroomId ? showroomName(showroomId) : (isMaster() ? 'All showrooms' : 'All my showrooms');
+    const placeName = (showroomId) => showroomId ? showroomName(showroomId) : allLabel();
     const fileSafe = (text) => text.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
     const offShort = (emp) => (emp.weekly_off != null ? DAY_NAMES[emp.weekly_off] : '-');
 
@@ -2187,7 +2490,8 @@
       const sum = (f) => people.reduce((n, p) => n + f(p.t), 0);
       const holidayDays = new Set(ctx.holidays.map((h) => h.holiday_date)).size;
       const chips = [['Staff', people.length], ['Present days', sum((t) => t.present)], ['Absent days', sum((t) => t.A)],
-        ['Late days', sum((t) => t.lateDays)], ['Half days', sum((t) => t.HD)], ['Holidays', holidayDays]];
+        ['Leave days', sum((t) => t.LV)], ['Late days', sum((t) => t.lateDays)], ['Half days', sum((t) => t.HD)],
+        ['Holidays', holidayDays]];
       const base = { month: ctx.label, place, chips, subtitle: `${place} · ${RULES(ctx.scopeIds)} ${madeOn()}.` };
       if (type === 'register') return registerReport(ctx, people, showroomId, base);
       if (type === 'summary') return summaryReport(ctx, people, base);
@@ -2201,8 +2505,8 @@
         const w = DAY_NAMES[weekdayOf(d)].slice(0, 2);
         return { title: `${n} ${w}`, html: `${n}<br>${w}`, cls: weekdayOf(d) === 0 ? 'wk' : '' };
       });
-      const totalTitles = ['Present', 'Late', 'Half day', 'Absent', 'Week off', 'Holiday', 'Paid days'];
-      const totals = (t) => [t.present, t.L, t.HD, t.A, t.WO, t.H, t.paid];
+      const totalTitles = ['Present', 'Late', 'Half day', 'Absent', 'Leave', 'Week off', 'Holiday', 'Paid days'];
+      const totals = (t) => [t.present, t.L, t.HD, t.A, t.LV, t.WO, t.H, t.paid];
       const columns = [{ title: 'Employee' }, ...(withShowroom ? [{ title: 'Showroom' }] : []), ...dayCols,
         ...totalTitles.map((title) => ({ title }))];
       const rows = people.map(({ emp, t }) => [
@@ -2231,11 +2535,12 @@
               details.push([c.date, DAY_NAMES[weekdayOf(c.date)], emp.employee_code || '', emp.full_name, showroomName(emp.showroom_id),
                 c.code, c.inMin != null ? minText(c.inMin) : '', c.outMin != null ? minText(c.outMin) : '',
                 c.worked != null ? decimalHours(c.worked) : '', c.late ? c.lateBy : '', c.early ? c.earlyBy : '',
-                c.present ? dayNote(c) : (c.holidayName ? 'Holiday: ' + c.holidayName : '')]);
+                c.present ? dayNote(c) : c.leave ? (LEAVE_TYPES[c.leaveType] || 'Leave')
+                  : [c.holidayName ? 'Holiday: ' + c.holidayName : '', c.perm ? permText(c.perm) : ''].filter(Boolean).join(', ')]);
             }
           }
           return [
-            { name: 'Register', aoa: register, widths: [5, 12, 26, 22, 18, 11, ...dayCols.map(() => 6), 8, 6, 8, 7, 8, 8, 9] },
+            { name: 'Register', aoa: register, widths: [5, 12, 26, 22, 18, 11, ...dayCols.map(() => 6), 8, 6, 8, 7, 7, 8, 8, 9] },
             { name: 'Daily details', aoa: details, widths: [11, 10, 12, 26, 18, 7, 10, 10, 7, 12, 16, 30] },
             { name: 'How to read', aoa: howToRead(ctx), widths: [14, 110] },
           ];
@@ -2249,12 +2554,18 @@
         ['P', 'Present, on time'],
         ['L', `Present but late: checked in more than ${workSettings.grace_minutes} minutes after opening time`],
         ['HD', `Half day: worked less than ${workSettings.half_day_hours} hours (check-in to check-out)`],
-        ['A', 'Absent: no check-in on a working day'],
+        ['A', 'Absent: no check-in on a working day, and no approved leave'],
+        ['CL', 'Casual leave (approved; paid)'],
+        ['SL', 'Sick leave (approved; paid)'],
+        ['EL', 'Earned leave (approved; paid)'],
+        ['CO', 'Comp off (approved; paid)'],
+        ['LOP', 'Loss of pay leave (approved; not paid)'],
         ['WO', 'Weekly off (set for each employee in the Staff tab)'],
         ['H', 'Holiday (Reports tab, Holidays)'],
         ['*', 'Check-in or check-out missing; still counted as present'],
+        ['Permission', 'A few hours off on one day, approved by HR. A late arrival or early exit inside the permission is not marked as late or left early.'],
         ['–', 'Not joined yet, or inactive'], [],
-        ['Paid days', 'Present + Late + half of Half days + Week offs + Holidays, up to today. Change it in Excel if your rule is different.'],
+        ['Paid days', 'Present + Late + half of Half days + Paid leave (CL, SL, EL, CO) + Week offs + Holidays, up to today. Change it in Excel if your rule is different.'],
         ['Hours', RULES(ctx.scopeIds)], [],
         ['Holidays', ctx.holidays.length ? ctx.holidays.map((h) => `${h.holiday_date} ${h.name}` +
           (h.showroom_id ? ` (${showroomName(h.showroom_id)})` : ' (all showrooms)')).join('; ') : 'None this month'],
@@ -2264,10 +2575,11 @@
 
     function summaryReport(ctx, people, base) {
       const titles = ['S.No', 'Employee code', 'Name', 'Designation', 'Showroom', 'Weekly off', 'Working days', 'Present',
-        'Half days', 'Absent', 'Late days', 'Left early', 'No check-in/out', 'Total hours', 'Average hours a day',
-        'Average check-in', 'Average check-out', 'Worked on off days', 'Paid days'];
+        'Half days', 'Absent', 'Paid leave', 'Loss of pay', 'Permissions', 'Late days', 'Left early', 'No check-in/out',
+        'Total hours', 'Average hours a day', 'Average check-in', 'Average check-out', 'Worked on off days', 'Paid days'];
       const values = people.map(({ emp, t }, i) => [i + 1, emp.employee_code || '', emp.full_name, emp.designation || '',
-        showroomName(emp.showroom_id), offShort(emp), t.workingDays, t.present, t.HD, t.A, t.lateDays, t.earlyDays, t.noOut,
+        showroomName(emp.showroom_id), offShort(emp), t.workingDays, t.present, t.HD, t.A, t.paidLeave, t.LOP, t.perms,
+        t.lateDays, t.earlyDays, t.noOut,
         decimalHours(t.workedMin), t.workedDays ? decimalHours(t.workedMin / t.workedDays) : '',
         t.inDays ? minText(Math.round(t.inSum / t.inDays)) : '', t.outDays ? minText(Math.round(t.outSum / t.outDays)) : '',
         t.offWorked, t.paid]);
@@ -2275,13 +2587,14 @@
       return {
         ...base, title, columns: titles.map((t) => ({ title: t })),
         rows: values.map((row) => row.map((v, i) => (i === 2 ? { v, html: `<b>${escapeHtml(v)}</b>` } : v))),
-        legend: 'Working days = days that were not a weekly off or holiday, from joining up to today. Hours count only days ' +
+        legend: 'Working days = days that were not a weekly off or holiday (leave days included), from joining up to today. ' +
+          'Hours count only days ' +
           'with both a check-in and a check-out. ' + LEGEND().split('. ').slice(-2).join('. '),
         empty: 'No staff for this showroom and month.',
         fileName: `monthly_summary_${ctx.month}_${fileSafe(base.place)}.xlsx`,
         sheets: () => [
           { name: 'Summary', aoa: [[`${title} - ${base.place}`], [base.subtitle], [], titles, ...values],
-            widths: [5, 12, 26, 22, 18, 11, 9, 8, 8, 8, 8, 9, 10, 10, 12, 11, 11, 11, 9] },
+            widths: [5, 12, 26, 22, 18, 11, 9, 8, 8, 8, 9, 9, 10, 8, 9, 10, 10, 12, 11, 11, 11, 9] },
           { name: 'How to read', aoa: howToRead(ctx), widths: [14, 110] },
         ],
       };
@@ -2311,7 +2624,8 @@
         rows: values.map((row) => row.map((v, i) => (i === 3 ? { v, html: `<b>${escapeHtml(v)}</b>` }
           : i === 11 ? { v, html: `<span style="white-space:normal">${escapeHtml(v)}</span>` } : v))),
         legend: `Late = checked in more than ${workSettings.grace_minutes} min after opening; left early = checked out more ` +
-          `than ${workSettings.grace_minutes} min before closing; half day = worked under ${workSettings.half_day_hours} h.`,
+          `than ${workSettings.grace_minutes} min before closing; half day = worked under ${workSettings.half_day_hours} h. ` +
+          'A late arrival or early exit covered by an approved permission is not counted.',
         empty: 'Nobody came late or left early this month.',
         fileName: `late_and_early_${ctx.month}_${fileSafe(base.place)}.xlsx`,
         sheets: () => [{ name: 'Late and early', aoa: [[`${title} - ${base.place}`], [base.subtitle], [], titles, ...values],
@@ -2424,11 +2738,12 @@
     for (const id of ['rptType', 'rptMonth', 'rptShowroom']) $(id).addEventListener('change', renderReports);
 
     // ---------- Holidays ----------
-    const canDeleteHoliday = (h) => isMaster() || (h.showroom_id != null && access.showroom_ids.includes(h.showroom_id));
+    const canDeleteHoliday = (h) => isMaster() || (!isManager() && h.showroom_id != null && access.showroom_ids.includes(h.showroom_id));
 
     async function renderHolidays() {
       const year = ($('rptMonth').value || todayIST()).slice(0, 4);
       $('holTitle').textContent = `Holidays ${year}`;
+      $('holAddRow').classList.toggle('hidden', isManager());
       $('holAddBtn').disabled = needsSql12;
       if (needsSql12) {
         $('holRows').innerHTML = '<tr><td colspan="4" class="muted">Holidays need 12_reports_and_hours.sql.</td></tr>';
@@ -2801,6 +3116,7 @@
     // Number of new reports, shown on the Support tab
     async function updateSupportBadge() {
       const badge = $('supportCount');
+      if (isManager()) return badge.classList.add('hidden');
       try {
         const { count, error } = await db.from('support_reports')
           .select('id', { count: 'exact', head: true })
@@ -2906,21 +3222,618 @@
     $('supLoadBtn').addEventListener('click', renderSupport);
     for (const id of ['supStatus', 'supShowroom']) $(id).addEventListener('change', renderSupport);
 
+    // ======================= Leave and permission (13_leave_and_live.sql) =======================
+    const LEAVE_TYPES = { CL: 'Casual leave', SL: 'Sick leave', EL: 'Earned leave', CO: 'Comp off', LOP: 'Loss of pay' };
+    const LV_STATUS = {
+      pending: '<span class="badge b-orange">Waiting</span>',
+      approved: '<span class="badge b-green">Approved</span>',
+      rejected: '<span class="badge b-red">Rejected</span>',
+      cancelled: '<span class="badge b-grey">Cancelled</span>',
+    };
+    const LV_COLUMNS = 'id, employee_id, kind, leave_type, from_date, to_date, from_time, to_time, reason, status, ' +
+      'requested_by_name, requested_at, decided_by_name, decided_at, decision_note, cancelled_by_name, cancelled_at';
+    let needsSql13 = false;          // true until 13_leave_and_live.sql has been run
+    const leaveById = new Map();     // the requests on screen
+
+    const fullDate = (date) => new Date(date + 'T12:00:00+05:30').toLocaleDateString('en-IN', {
+      timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+    });
+    const daysOf = (r) => Math.round((dayStart(r.to_date) - dayStart(r.from_date)) / DAY_MS) + 1;
+
+    // "Casual leave (CL)" and "Thu, 26 Nov 2026 to Fri, 27 Nov 2026"
+    function leaveWhat(r) {
+      if (r.kind === 'permission') {
+        return { title: 'Permission', when: `${fullDate(r.from_date)}, ${minText(toMin(r.from_time))} to ${minText(toMin(r.to_time))}` };
+      }
+      return {
+        title: `${LEAVE_TYPES[r.leave_type] || 'Leave'} (${r.leave_type})`,
+        when: daysOf(r) === 1 ? fullDate(r.from_date) : `${fullDate(r.from_date)} to ${fullDate(r.to_date)} (${daysOf(r)} days)`,
+      };
+    }
+    const leaveText = (r) => { const w = leaveWhat(r); return `${w.title}, ${w.when}`; };
+
+    // Database messages in plain words
+    function friendlyRpcError(err) {
+      const text = err?.message || String(err);
+      if (/Could not find the function|schema cache|does not exist/i.test(text)) {
+        needsSql13 = true;
+        showSql13Notice();
+        return isMaster() ? 'Run 13_leave_and_live.sql in Supabase first (see the red box above).'
+          : 'Leave is not switched on yet. Please ask the master admin.';
+      }
+      return text;
+    }
+
+    function showSql13Notice() {
+      const el = $('sql13Notice');
+      el.innerHTML = isMaster()
+        ? '<b>One step is missing in Supabase.</b> Run <b>13_leave_and_live.sql</b> in Supabase (SQL Editor) to switch on leave, ' +
+          'permission, view-only logins and the live attendance page. Then press Ctrl+F5 on this page.'
+        : '<b>Leave is not switched on yet.</b> Please ask the master admin to finish the setup (13_leave_and_live.sql).';
+      el.classList.toggle('hidden', !needsSql13);
+    }
+
+    // Requests of the staff this login can see (the database decides), page by page; none before 13 is run
+    async function loadLeave(build) {
+      try {
+        const rows = await fetchAll(() => build(db.from('leave_requests').select(LV_COLUMNS)));
+        needsSql13 = false;
+        return rows;
+      } catch (err) {
+        if (missingTable(err)) {
+          needsSql13 = true;
+          return [];
+        }
+        throw err;
+      }
+    }
+
+    function leaveEmployeeCell(r) {
+      const emp = employees.find((e) => e.id === r.employee_id);
+      if (!emp) return `<span class="muted">Employee #${r.employee_id}</span>`;
+      return `<b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(
+        [emp.employee_code, emp.phone].filter(Boolean).join(' · '))}</span>`;
+    }
+    const leaveShowroom = (r) => showroomName(employees.find((e) => e.id === r.employee_id)?.showroom_id);
+    // A team manager's or showroom manager's own request (their own manager or HR decide it)
+    const isOwnRequest = (r) => isManager() && r.employee_id === access.employee_id;
+
+    async function renderLeave() {
+      try {
+        await loadBase();
+      } catch (err) {
+        setMsg('pendingMsg', 'Could not load: ' + (err.message || err), false);
+        return;
+      }
+      fillLeaveForm();
+      if (!$('lvMonth').value) $('lvMonth').value = todayIST().slice(0, 7);
+      await Promise.all([renderPending(), renderLeaveList()]);
+      showSql13Notice();
+      updateLeaveBadge();
+    }
+
+    async function renderPending() {
+      try {
+        const rows = await loadLeave((q) => q.eq('status', 'pending').order('requested_at', { ascending: true }));
+        for (const r of rows) leaveById.set(r.id, r);
+        $('pendingCount').textContent = rows.length ? `(${rows.length})` : '';
+        $('pendingRows').innerHTML = rows.map((r) => {
+          const w = leaveWhat(r);
+          return `<tr>
+            <td>${escapeHtml(shortTimeIST(r.requested_at))}</td>
+            <td>${leaveEmployeeCell(r)}</td>
+            <td>${escapeHtml(leaveShowroom(r))}</td>
+            <td class="wrap"><b>${escapeHtml(w.title)}</b><br>${escapeHtml(w.when)}</td>
+            <td class="wrap">${escapeHtml(r.reason)}</td>
+            <td class="actions">${isOwnRequest(r) ? '<span class="muted">Your own request: your manager or HR decide it</span>' : `
+              <button type="button" data-act="approve" data-id="${r.id}">Approve</button>
+              <button type="button" class="secondary danger" data-act="reject" data-id="${r.id}">Reject</button>`}
+            </td>
+          </tr>`;
+        }).join('') || `<tr><td colspan="6" class="muted">${needsSql13 ? 'Leave is not switched on yet.'
+          : 'Nothing is waiting for approval.'}</td></tr>`;
+        setMsg('pendingMsg', '');
+      } catch (err) {
+        setMsg('pendingMsg', 'Could not load the requests: ' + (err.message || err), false);
+      }
+    }
+
+    async function renderLeaveList() {
+      const month = /^\d{4}-\d{2}$/.test($('lvMonth').value) ? $('lvMonth').value : todayIST().slice(0, 7);
+      const [y, m] = month.split('-').map(Number);
+      const from = `${month}-01`;
+      const to = `${month}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+      const showroomId = Number($('lvListShowroom').value) || null;
+      const status = $('lvStatus').value;
+      $('lvLoadBtn').disabled = true;
+      try {
+        let rows = await loadLeave((q) => {
+          let query = q.lte('from_date', to).gte('to_date', from).order('from_date').order('id');
+          if (status) query = query.eq('status', status);
+          return query;
+        });
+        if (showroomId) rows = rows.filter((r) => employees.find((e) => e.id === r.employee_id)?.showroom_id === showroomId);
+        for (const r of rows) leaveById.set(r.id, r);
+        $('lvListTitle').textContent = `Leave and permission - ${MONTH_NAMES[m - 1]} ${y}`;
+        $('lvRows').innerHTML = rows.map((r) => {
+          const w = leaveWhat(r);
+          const by = r.status === 'cancelled' ? r.cancelled_by_name : r.status === 'pending' ? '' : r.decided_by_name;
+          const note = r.decision_note ? `<br><span class="muted">"${escapeHtml(r.decision_note)}"</span>` : '';
+          const open = r.status === 'pending' || r.status === 'approved';
+          return `<tr>
+            <td>${leaveEmployeeCell(r)}</td>
+            <td>${escapeHtml(leaveShowroom(r))}</td>
+            <td class="wrap"><b>${escapeHtml(w.title)}</b><br>${escapeHtml(w.when)}</td>
+            <td>${r.kind === 'leave' ? daysOf(r) : '-'}</td>
+            <td class="wrap">${escapeHtml(r.reason)}<br><span class="muted">Asked by ${escapeHtml(r.requested_by_name || '-')},
+              ${escapeHtml(shortTimeIST(r.requested_at))}</span></td>
+            <td class="wrap">${LV_STATUS[r.status] || escapeHtml(r.status)}${by ? ` <span class="muted">by ${escapeHtml(by)}</span>` : ''}${note}</td>
+            <td class="actions">
+              ${r.status === 'pending' && !isOwnRequest(r) ? `<button type="button" data-act="approve" data-id="${r.id}">Approve</button>
+                <button type="button" class="secondary danger" data-act="reject" data-id="${r.id}">Reject</button>` : ''}
+              ${open ? `<button type="button" class="secondary" data-act="cancel" data-id="${r.id}">Cancel</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('') || `<tr><td colspan="7" class="muted">${needsSql13 ? 'Leave is not switched on yet.'
+          : 'No leave or permission in this month.'}</td></tr>`;
+
+        // Leave days that fall inside this month
+        const daysIn = (r) => {
+          const a = r.from_date < from ? from : r.from_date;
+          const b = r.to_date > to ? to : r.to_date;
+          return Math.round((dayStart(b) - dayStart(a)) / DAY_MS) + 1;
+        };
+        const approved = rows.filter((r) => r.status === 'approved');
+        $('lvChips').innerHTML = [
+          ['Waiting for approval', rows.filter((r) => r.status === 'pending').length],
+          ['Approved leave days', approved.filter((r) => r.kind === 'leave').reduce((n, r) => n + daysIn(r), 0)],
+          ['of which loss of pay', approved.filter((r) => r.leave_type === 'LOP').reduce((n, r) => n + daysIn(r), 0)],
+          ['Approved permissions', approved.filter((r) => r.kind === 'permission').length],
+          ['Rejected', rows.filter((r) => r.status === 'rejected').length],
+        ].map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
+        setMsg('lvListMsg', '');
+      } catch (err) {
+        setMsg('lvListMsg', 'Could not load: ' + (err.message || err), false);
+      } finally {
+        $('lvLoadBtn').disabled = false;
+      }
+    }
+
+    // ---------- "Add leave or permission for a staff member" ----------
+    function fillLeaveForm() {
+      const all = `<option value="">${allLabel()}</option>` + showroomOptions();
+      for (const id of ['lvShowroom', 'lvListShowroom']) {
+        const sel = $(id);
+        const current = sel.value;
+        sel.innerHTML = all;
+        sel.value = current;
+      }
+      if (!$('lvType').options.length) {
+        $('lvType').innerHTML = Object.entries(LEAVE_TYPES).map(([k, v]) => `<option value="${k}">${v} (${k})</option>`).join('');
+      }
+      fillLeaveEmployees();
+      if (!$('lvFrom').value) $('lvFrom').value = todayIST();
+      if (!$('lvTo').value) $('lvTo').value = $('lvFrom').value;
+      showLeaveKind();
+    }
+
+    function fillLeaveEmployees() {
+      const showroomId = Number($('lvShowroom').value) || null;
+      const list = employees.filter((e) => e.is_active && (!showroomId || e.showroom_id === showroomId)
+        && !(isManager() && e.id === access.employee_id)).sort(byShowroomThenName);
+      const sel = $('lvEmployee');
+      const current = sel.value;
+      sel.innerHTML = '<option value="">Choose the employee</option>' + list.map((e) =>
+        `<option value="${e.id}">${escapeHtml(e.full_name)}${e.employee_code ? ' · ' + escapeHtml(e.employee_code) : ''}` +
+        `${showroomId ? '' : ' · ' + escapeHtml(showroomName(e.showroom_id))}</option>`).join('');
+      if (current && list.some((e) => String(e.id) === current)) sel.value = current;
+    }
+
+    function showLeaveKind() {
+      const perm = $('lvKind').value === 'permission';
+      document.querySelectorAll('.lv-leave').forEach((el) => el.classList.toggle('hidden', perm));
+      document.querySelectorAll('.lv-perm').forEach((el) => el.classList.toggle('hidden', !perm));
+      $('lvFromLabel').textContent = perm ? 'Date *' : 'From date *';
+    }
+
+    $('lvKind').addEventListener('change', showLeaveKind);
+    $('lvShowroom').addEventListener('change', fillLeaveEmployees);
+    $('lvFrom').addEventListener('change', () => {
+      if (!$('lvTo').value || $('lvTo').value < $('lvFrom').value) $('lvTo').value = $('lvFrom').value;
+    });
+
+    $('lvAddBtn').addEventListener('click', async () => {
+      const employeeId = Number($('lvEmployee').value);
+      const kind = $('lvKind').value;
+      const reason = $('lvReason').value.trim();
+      if (!employeeId) return setMsg('lvMsg', 'Please choose the employee.', false);
+      if (!$('lvFrom').value) return setMsg('lvMsg', 'Please choose the date.', false);
+      if (kind === 'leave' && $('lvTo').value && $('lvTo').value < $('lvFrom').value) {
+        return setMsg('lvMsg', 'The "To date" cannot be before the "From date".', false);
+      }
+      if (kind === 'permission' && (!$('lvFromTime').value || !$('lvToTime').value)) {
+        return setMsg('lvMsg', 'Please choose the from and to time.', false);
+      }
+      if (!reason) return setMsg('lvMsg', 'Please write the reason.', false);
+      $('lvAddBtn').disabled = true;
+      setMsg('lvMsg', 'Saving…', true);
+      try {
+        await rpc('add_leave_for_employee', {
+          p_employee_id: employeeId,
+          p_kind: kind,
+          p_from_date: $('lvFrom').value,
+          p_reason: reason,
+          p_leave_type: kind === 'leave' ? $('lvType').value : null,
+          p_to_date: kind === 'leave' ? ($('lvTo').value || $('lvFrom').value) : null,
+          p_from_time: kind === 'permission' ? $('lvFromTime').value : null,
+          p_to_time: kind === 'permission' ? $('lvToTime').value : null,
+        });
+        const emp = employees.find((e) => e.id === employeeId);
+        $('lvReason').value = '';
+        setMsg('lvMsg', `Saved for ${emp ? emp.full_name : 'the employee'} (approved).`, true);
+        await renderLeaveList();
+      } catch (err) {
+        setMsg('lvMsg', friendlyRpcError(err), false);
+      } finally {
+        $('lvAddBtn').disabled = false;
+      }
+    });
+
+    // ---------- Approve, reject, cancel ----------
+    let lvAction = null; // { act: 'approve' | 'reject' | 'cancel', row }
+    function openLeaveDialog(act, row) {
+      lvAction = { act, row };
+      const emp = employees.find((e) => e.id === row.employee_id);
+      $('lvDlgTitle').textContent = { approve: 'Approve', reject: 'Reject', cancel: 'Cancel this request' }[act];
+      $('lvDlgText').textContent = `${emp ? emp.full_name : 'Employee #' + row.employee_id}: ${leaveText(row)}. Reason: "${row.reason}"`;
+      $('lvDlgNoteLabel').textContent = act === 'reject' ? 'Why is it rejected? * (the person sees this in the app)'
+        : 'Note (optional; the person sees it in the app)';
+      $('lvDlgNote').value = '';
+      $('lvDlgOk').textContent = { approve: 'Approve', reject: 'Reject', cancel: 'Cancel the request' }[act];
+      setMsg('lvDlgMsg', '');
+      $('lvDialog').showModal();
+      $('lvDlgNote').focus();
+    }
+    function onLeaveButton(e) {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const row = leaveById.get(Number(btn.dataset.id));
+      if (row) openLeaveDialog(btn.dataset.act, row);
+    }
+    $('pendingRows').addEventListener('click', onLeaveButton);
+    $('lvRows').addEventListener('click', onLeaveButton);
+    $('lvDlgClose').addEventListener('click', () => $('lvDialog').close());
+    $('lvDlgOk').addEventListener('click', async () => {
+      if (!lvAction) return;
+      const { act, row } = lvAction;
+      const note = $('lvDlgNote').value.trim();
+      if (act === 'reject' && !note) return setMsg('lvDlgMsg', 'Please write why it is rejected.', false);
+      $('lvDlgOk').disabled = true;
+      try {
+        if (act === 'cancel') {
+          await rpc('cancel_leave_request', { p_request_id: row.id, p_note: note || null });
+        } else {
+          await rpc('decide_leave_request', { p_request_id: row.id, p_approve: act === 'approve', p_note: note || null });
+        }
+        $('lvDialog').close();
+        await Promise.all([renderPending(), renderLeaveList()]);
+        updateLeaveBadge();
+        const emp = employees.find((e) => e.id === row.employee_id);
+        setMsg('pendingMsg', `${{ approve: 'Approved', reject: 'Rejected', cancel: 'Cancelled' }[act]}: ` +
+          `${emp ? emp.full_name + ', ' : ''}${leaveText(row)}.`, true);
+      } catch (err) {
+        setMsg('lvDlgMsg', friendlyRpcError(err), false);
+      } finally {
+        $('lvDlgOk').disabled = false;
+      }
+    });
+    $('lvLoadBtn').addEventListener('click', renderLeaveList);
+    for (const id of ['lvMonth', 'lvListShowroom', 'lvStatus']) $(id).addEventListener('change', renderLeaveList);
+
+    // Number of requests waiting, shown on the Leave tab
+    async function updateLeaveBadge() {
+      const badge = $('leaveCount');
+      try {
+        let query = db.from('leave_requests')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending');
+        if (isManager() && access.employee_id) query = query.neq('employee_id', access.employee_id);
+        const { count, error } = await query;
+        if (error || !count) throw error || new Error('none');
+        badge.textContent = count;
+        badge.classList.remove('hidden');
+      } catch (_) {
+        badge.classList.add('hidden');
+      }
+    }
+
+    // ======================= View-only logins (for the CEO page; master admin only) =======================
+    let viewers = [];
+    const ceoPageLink = () => new URL('ceo.html', location.href.split('#')[0]).href;
+
+    async function renderViewers() {
+      if (!isMaster()) return;
+      try {
+        const { data, error } = await db.from('viewers').select('user_id, full_name, login_email, mobile').order('full_name');
+        if (error) {
+          if (missingTable(error)) {
+            $('vwRows').innerHTML = '';
+            return setMsg('vwListMsg', 'Run 13_leave_and_live.sql in Supabase first (see the Leave tab).', false);
+          }
+          throw new Error(error.message);
+        }
+        viewers = data;
+        $('vwRows').innerHTML = data.map((u) => `<tr>
+            <td><b>${escapeHtml(u.full_name)}</b></td>
+            <td>${escapeHtml(u.login_email)}</td>
+            <td>${escapeHtml(u.mobile || '-')}</td>
+            <td class="actions">
+              <button type="button" class="secondary" data-act="edit" data-id="${u.user_id}">Edit / new password</button>
+              <button type="button" class="secondary danger" data-act="delete" data-id="${u.user_id}">Delete</button>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="4" class="muted">No view-only logins yet.</td></tr>';
+        setMsg('vwListMsg', '');
+      } catch (err) {
+        setMsg('vwListMsg', 'Could not load view-only logins: ' + (err.message || err), false);
+      }
+    }
+
+    function resetVwForm() {
+      for (const id of ['vwUserId', 'vwName', 'vwLogin', 'vwMobile', 'vwPassword']) $(id).value = '';
+      $('vwLogin').disabled = false;
+      $('vwFormTitle').textContent = 'Add a view-only login (for the CEO)';
+      $('vwPasswordLabel').textContent = 'Password * (8 or more characters)';
+      $('saveVwBtn').textContent = 'Add view-only login';
+      $('cancelVwBtn').classList.add('hidden');
+    }
+    $('cancelVwBtn').addEventListener('click', resetVwForm);
+
+    // The admin-users function in Supabase is still an older version
+    const oldFunction = (err) => /Unknown action/i.test(err?.message || '')
+      ? 'Please update the admin-users function in Supabase to V5, then try again.' : (err?.message || String(err));
+
+    $('vwRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const u = viewers.find((x) => x.user_id === btn.dataset.id);
+      if (!u) return;
+      if (btn.dataset.act === 'edit') {
+        $('vwUserId').value = u.user_id;
+        $('vwName').value = u.full_name;
+        $('vwLogin').value = u.login_email;
+        $('vwLogin').disabled = true; // the login itself cannot be changed; delete and add again instead
+        $('vwMobile').value = u.mobile || '';
+        $('vwPassword').value = '';
+        $('vwPasswordLabel').textContent = 'New password (leave empty to keep the current one)';
+        $('vwFormTitle').textContent = 'Edit view-only login: ' + u.full_name;
+        $('saveVwBtn').textContent = 'Save changes';
+        $('cancelVwBtn').classList.remove('hidden');
+        setMsg('vwMsg', '');
+        $('vwName').focus();
+        return;
+      }
+      if (!confirm(`Delete the view-only login of ${u.full_name} (${u.login_email})?\n\nThey will no longer be able to ` +
+                   'open the live attendance page. Nothing else changes.')) return;
+      btn.disabled = true;
+      try {
+        await callAdminUsers({ action: 'delete_viewer', user_id: u.user_id });
+        await renderViewers();
+        setMsg('vwListMsg', `View-only login of ${u.full_name} deleted.`, true);
+      } catch (err) {
+        setMsg('vwListMsg', oldFunction(err), false);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $('saveVwBtn').addEventListener('click', async () => {
+      const editing = $('vwUserId').value !== '';
+      const name = $('vwName').value.trim();
+      const login = $('vwLogin').value.trim().toLowerCase();
+      const password = $('vwPassword').value;
+      if (!name) return setMsg('vwMsg', 'Please enter the name.', false);
+      if (!editing && !looksLikeEmail(login)) return setMsg('vwMsg', 'The login must look like an email, for example ceo@pillaimotors.in', false);
+      if ((!editing || password) && password.length < 8) return setMsg('vwMsg', 'The password must have at least 8 characters.', false);
+
+      $('saveVwBtn').disabled = true;
+      setMsg('vwMsg', 'Saving…', true);
+      try {
+        if (editing) {
+          await callAdminUsers({ action: 'update_viewer', user_id: $('vwUserId').value, full_name: name,
+            mobile: $('vwMobile').value, new_password: password });
+          setMsg('vwMsg', `Saved.${password ? ` New password for ${login}: ${password}` : ''}`, true);
+        } else {
+          await callAdminUsers({ action: 'create_viewer', full_name: name, login_email: login, mobile: $('vwMobile').value, password });
+          setMsg('vwMsg', `View-only login added. Send them the link ${ceoPageLink()} with login ${login} and password ${password}`, true);
+        }
+        const keep = $('vwMsg').textContent;
+        resetVwForm();
+        setMsg('vwMsg', keep, true);
+        await renderViewers();
+      } catch (err) {
+        setMsg('vwMsg', oldFunction(err), false);
+      } finally {
+        $('saveVwBtn').disabled = false;
+      }
+    });
+
+
+
+    // ======================= Teams (14_teams_faces_reminders.sql) =======================
+    const ROLE_NAMES = { staff: 'Staff', team_manager: 'Team manager', showroom_manager: 'Showroom manager' };
+    const ROLE_SHORT = { team_manager: 'TM', showroom_manager: 'SM' };
+    // Whom someone with this role can report to
+    const bossLevels = (role) => (role === 'showroom_manager' ? [] : role === 'team_manager'
+      ? ['showroom_manager'] : ['team_manager', 'showroom_manager']);
+    const byRoleThenName = (a, b) => (a.team_role === b.team_role ? 0 : a.team_role === 'showroom_manager' ? -1 : 1)
+      || a.full_name.localeCompare(b.full_name);
+    // Active managers of a showroom that this role can report to
+    const bossChoices = (showroomId, role) => employees
+      .filter((e) => e.is_active && e.showroom_id === showroomId && bossLevels(role).includes(e.team_role))
+      .sort(byRoleThenName);
+    // For a showroom manager: themselves and their team managers
+    const myManagerChoices = () => {
+      const me = employees.find((e) => e.id === access.employee_id);
+      const tms = employees.filter((e) => e.is_active && e.team_role === 'team_manager' && e.reports_to === access.employee_id)
+        .sort(byRoleThenName);
+      return [me, ...tms].filter(Boolean);
+    };
+    const bossOption = (e, selectedId) => `<option value="${e.id}"${e.id === selectedId ? ' selected' : ''}>` +
+      `${escapeHtml(e.full_name)}${ROLE_SHORT[e.team_role] ? ' (' + ROLE_SHORT[e.team_role] + ')' : ''}` +
+      `${e.id === access.employee_id ? ' - you' : ''}</option>`;
+
+    function roleCell(emp, me) {
+      if (needsSql14) return '<span class="muted">-</span>';
+      const role = emp.team_role || 'staff';
+      if (isManager() || me) return escapeHtml(ROLE_NAMES[role] || 'Staff');
+      return `<select class="role-select" data-id="${emp.id}" aria-label="Role">` +
+        Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}"${role === k ? ' selected' : ''}>${v}</option>`).join('') +
+        '</select>';
+    }
+
+    // The Team column: role, and whom they report to
+    function teamCell(emp, me) {
+      if (needsSql14) return '<span class="muted">-</span>';
+      if ((emp.team_role || 'staff') === 'showroom_manager') return roleCell(emp, me) + '<div class="team-boss">Reports to HR</div>';
+      return roleCell(emp, me) + `<div class="team-boss">Reports to ${bossCell(emp, me)}</div>`;
+    }
+
+    function bossCell(emp, me) {
+      if (needsSql14) return '<span class="muted">-</span>';
+      const role = emp.team_role || 'staff';
+      if (role === 'showroom_manager') return '<span class="muted">HR</span>';
+      const boss = employees.find((e) => e.id === emp.reports_to);
+      const myBoss = me ? (access.managers || [])[0] : null;   // from my_managers(): my own manager
+      const text = boss ? escapeHtml(boss.full_name) + (boss.is_active ? '' : ' <span class="badge b-orange">inactive</span>')
+        : myBoss ? escapeHtml(myBoss.full_name)
+        : emp.reports_to ? 'Employee #' + emp.reports_to : '<span class="badge b-orange">Nobody yet</span>';
+      let choices;
+      if (me) return text;
+      if (isManager()) {
+        if (!isShowroomManager() || role !== 'staff') return text;  // a team manager only looks; a showroom manager moves staff
+        choices = myManagerChoices();
+      } else {
+        choices = bossChoices(emp.showroom_id, role).filter((e) => e.id !== emp.id);
+      }
+      if (boss && !choices.some((e) => e.id === boss.id)) choices = [boss, ...choices];
+      return `<select class="boss-select" data-id="${emp.id}" aria-label="Reports to">` +
+        (isManager() ? '' : `<option value=""${emp.reports_to ? '' : ' selected'}>Nobody yet</option>`) +
+        choices.map((e) => bossOption(e, emp.reports_to)).join('') + '</select>';
+    }
+
+    // "Add an employee": role and reports to
+    function fillNewTeam() {
+      const roles = isManager() ? (isShowroomManager() ? ['staff', 'team_manager'] : ['staff'])
+        : ['staff', 'team_manager', 'showroom_manager'];
+      const roleSel = $('newRole');
+      const keepRole = roleSel.value || 'staff';
+      roleSel.innerHTML = roles.map((k) => `<option value="${k}">${ROLE_NAMES[k]}</option>`).join('');
+      roleSel.value = roles.includes(keepRole) ? keepRole : 'staff';
+      const role = roleSel.value;
+      let choices;
+      if (isManager()) {
+        const me = employees.find((e) => e.id === access.employee_id);
+        choices = role === 'team_manager' || !isShowroomManager() ? [me].filter(Boolean) : myManagerChoices();
+      } else {
+        choices = bossChoices(Number($('newShowroom').value) || null, role);
+      }
+      const sel = $('newReportsTo');
+      const keep = sel.value;
+      sel.innerHTML = (isManager() ? '' : '<option value="">Nobody yet</option>') + choices.map((e) => bossOption(e, null)).join('');
+      if (keep && choices.some((e) => String(e.id) === keep)) sel.value = keep;
+      sel.disabled = isManager() && choices.length <= 1;
+      $('newRoleBox').classList.toggle('hidden', needsSql14 || roles.length === 1);
+      $('newReportsBox').classList.toggle('hidden', needsSql14 || role === 'showroom_manager');
+    }
+    $('newRole').addEventListener('change', fillNewTeam);
+    $('newShowroom').addEventListener('change', fillNewTeam);
+
+    // ---------- Same face on two logins (master admin and HR) ----------
+    async function renderDuplicates() {
+      const card = $('dupCard');
+      if (isManager() || needsSql14) return card.classList.add('hidden');
+      const { data, error } = await db.rpc('find_duplicate_faces');
+      if (error || !data || !data.length) return card.classList.add('hidden');
+      card.classList.remove('hidden');
+      const who = (id, name, phone, showroomId) => `<b>${escapeHtml(name)}</b><br><span class="muted">${escapeHtml(phone || '')} · ` +
+        `${escapeHtml(showroomName(showroomId))}</span>` + (isMaster() || access.showroom_ids.includes(showroomId)
+          ? `<br><button type="button" class="secondary" data-act="dupface" data-id="${id}" data-name="${escapeHtml(name)}">Reset face</button>`
+          : '<br><span class="muted">(another showroom: its HR or the master admin can reset it)</span>');
+      $('dupRows').innerHTML = data.map((r) => `<tr>
+          <td>${who(r.employee_id, r.full_name, r.phone, r.showroom_id)}</td>
+          <td>${who(r.other_employee_id, r.other_full_name, r.other_phone, r.other_showroom_id)}</td>
+          <td>${Math.round(Number(r.similarity) * 100)}%</td>
+        </tr>`).join('');
+    }
+    $('dupRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act="dupface"]');
+      if (!btn) return;
+      if (!confirm(`Reset the face of ${btn.dataset.name}?\n\nThey will need to register their face again ` +
+                   '(in front of the manager) before they can check in.')) return;
+      btn.disabled = true;
+      try {
+        await rpc('reset_employee_face', { p_employee_id: Number(btn.dataset.id) });
+        setMsg('dupMsg', `Face reset for ${btn.dataset.name}.`, true);
+        await renderStaff();
+      } catch (err) {
+        setMsg('dupMsg', err.message || String(err), false);
+        btn.disabled = false;
+      }
+    });
+
+    // ---------- Check-in reminder settings (master admin) ----------
+    async function loadReminderSettings() {
+      try {
+        const { data, error } = await db.from('work_settings')
+          .select('reminders_on, reminder_time, reminder_count, reminder_gap_minutes').eq('id', 1).maybeSingle();
+        if (error) throw error;
+        $('remOn').checked = data?.reminders_on ?? true;
+        $('remTime').value = String(data?.reminder_time ?? '10:00').slice(0, 5);
+        $('remCount').value = data?.reminder_count ?? 3;
+        $('remGap').value = data?.reminder_gap_minutes ?? 5;
+        $('saveRemBtn').disabled = false;
+        setMsg('remMsg', '');
+      } catch (err) {
+        $('saveRemBtn').disabled = true;
+        setMsg('remMsg', ['42703', '42P01', 'PGRST204', 'PGRST205'].includes(err.code)
+          ? 'Run 14_teams_faces_reminders.sql in Supabase first.' : 'Could not load the reminder: ' + (err.message || err), false);
+      }
+    }
+    $('saveRemBtn').addEventListener('click', async () => {
+      const time = $('remTime').value;
+      const count = parseInt($('remCount').value, 10);
+      const gap = parseInt($('remGap').value, 10);
+      if (!time) return setMsg('remMsg', 'Please choose the time of the first reminder.', false);
+      $('saveRemBtn').disabled = true;
+      try {
+        await rpc('save_reminder_settings', { p_on: $('remOn').checked, p_time: time, p_count: count, p_gap_minutes: gap });
+        const times = Array.from({ length: count }, (_, i) => minText(toMin(time) + i * gap));
+        setMsg('remMsg', $('remOn').checked ? `Saved. Phones ring at ${times.join(', ')} if the person has not checked in.`
+          : 'Saved. Reminders are switched off.', true);
+      } catch (err) {
+        setMsg('remMsg', err.message || String(err), false);
+      } finally {
+        $('saveRemBtn').disabled = false;
+      }
+    });
+
     // ======================= Tabs =======================
     function showTab(tab) {
       if (!isMaster() && (tab === 'users' || tab === 'settings')) tab = 'attendance';
+      if (isManager() && ['activity', 'support', 'showrooms'].includes(tab)) tab = 'attendance';
       currentTab = tab;
       for (const t of TABS) $('tab-' + t).classList.toggle('hidden', t !== tab);
       document.querySelectorAll('nav.tabs button').forEach((b) =>
         b.classList.toggle('active', b.dataset.tab === tab));
       if (tab === 'attendance') refresh();
       if (tab === 'reports') renderReports();
+      if (tab === 'leave') renderLeave();
       if (tab === 'activity') renderActivity();
       if (tab === 'support') renderSupport();
       if (tab === 'staff') renderStaff();
       if (tab === 'showrooms') renderShowrooms();
       if (tab === 'users') renderUsers();
-      if (tab === 'settings') loadSettings();
+      if (tab === 'settings') { loadSettings(); loadReminderSettings(); }
     }
 
     document.querySelectorAll('nav.tabs button').forEach((b) =>
@@ -2939,7 +3852,13 @@
       const { data, error } = await db.rpc('get_my_access');
       if (!error && data) {
         needsSql10 = false;
-        return { role: data.role, name: data.name, showroom_ids: (data.showroom_ids || []).map(Number) };
+        const found = { role: data.role, name: data.name, showroom_ids: (data.showroom_ids || []).map(Number),
+          employee_id: data.employee_id ?? null, team_role: data.team_role ?? null, managers: [] };
+        if (found.role === 'manager') {
+          const { data: mine } = await db.rpc('my_managers');   // their own manager, shown in their own row
+          found.managers = mine || [];
+        }
+        return found;
       }
       const { data: isAdmin, error: adminError } = await db.rpc('is_admin');
       if (adminError) throw new Error(adminError.message);
@@ -2956,6 +3875,11 @@
         showLogin('Could not check access: ' + (err.message || err));
         return;
       }
+      if (found.role === 'viewer') {
+        // View-only logins (the CEO) use the live attendance page, not this dashboard
+        location.replace('ceo.html');
+        return;
+      }
       if (found.role === 'none') {
         await db.auth.signOut();
         showLogin('This login has no access to the dashboard. Staff use the phone app instead.');
@@ -2964,14 +3888,19 @@
       access = found;
       const { data: { user } } = await db.auth.getUser();
       document.querySelectorAll('[data-master-only]').forEach((el) => el.classList.toggle('hidden', !isMaster()));
+      document.querySelectorAll('[data-no-manager]').forEach((el) => el.classList.toggle('hidden', isManager()));
+      for (const id of ['bulkCard', 'importCard']) $(id).classList.toggle('hidden', isManager());
       $('setupNotice').classList.toggle('hidden', !(needsSql10 && isMaster()));
       try {
         await loadBase();
       } catch (err) {
         $('appError').textContent = 'Could not load: ' + (err.message || err);
       }
-      $('who').textContent = (user?.email || '') + ' · ' + (isMaster() ? 'Master admin'
-        : 'HR: ' + (myShowrooms().map((s) => s.name).join(', ') || 'no showroom yet'));
+      $('who').textContent = isManager()
+        ? `${access.name || user?.email || ''} · ${isShowroomManager() ? 'Showroom manager' : 'Team manager'}, ` +
+          (myShowrooms().map((s) => s.name).join(', ') || 'no showroom')
+        : (user?.email || '') + ' · ' + (isMaster() ? 'Master admin'
+          : 'HR: ' + (myShowrooms().map((s) => s.name).join(', ') || 'no showroom yet'));
       $('loginView').classList.add('hidden');
       $('appView').classList.remove('hidden');
 
@@ -2984,10 +3913,12 @@
 
       showTab('attendance');
       updateSupportBadge();
+      updateLeaveBadge();
       clearInterval(refreshTimer);
       refreshTimer = setInterval(() => {
         if (currentTab === 'attendance' && $('date').value === todayIST()) refresh();
         updateSupportBadge();
+        updateLeaveBadge();
       }, 60000);
     }
 
@@ -2997,12 +3928,12 @@
       $('loginBtn').disabled = true;
       $('loginError').textContent = '';
       const { error } = await db.auth.signInWithPassword({
-        email: $('email').value.trim(),
+        email: loginEmail($('email').value),
         password: $('password').value,
       });
       $('loginBtn').disabled = false;
       if (error) {
-        $('loginError').textContent = 'Wrong email or password.';
+        $('loginError').textContent = 'Wrong login or password.';
         return;
       }
       await showApp();
