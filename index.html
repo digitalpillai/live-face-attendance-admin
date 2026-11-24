@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- index.html | Version: V10
+<!-- index.html | Version: V11
      Live Face Attendance - Admin dashboard
      V2: adds Staff (add, edit, deactivate, reset face, reset password), Showrooms and Settings tabs.
      V3: "Reset password" now lets the admin type a new password (empty = their mobile number).
@@ -29,6 +29,12 @@
          staff, edit, weekly off, make inactive, approve or reject leave and permission. "Same face on two logins" list
          with Reset face. Check-in reminder settings (Settings tab). Needs 14_teams_faces_reminders.sql and
          admin-users V6.
+     V11: Mobile number of someone who left (inactive) can be given to a new employee ("Add an employee" asks first;
+         the old record keeps its history). Office Wi-Fi attendance: each showroom's Wi-Fi name and routers (Showrooms
+         tab), "Wi-Fi attendance to check" with Confirm / Reject (Attendance tab), Wi-Fi marks on entries, on/off and
+         number of face checks (Settings tab). Needs 15_numbers_wifi_logs.sql and admin-users V7.
+         Activity tab: a "Person" filter (the Activity button on a staff row uses it), because app 1.4.0 sends every
+         action in the app, so there are many more lines.
      Hosted free on GitHub Pages. It uses the Supabase PUBLISHABLE key, which is safe to be public:
      the data is protected by the admin login and the security rules in Supabase.
      Never put the Supabase SECRET key in this file. -->
@@ -198,6 +204,20 @@
 
       <div class="chips" id="chips"></div>
 
+      <div class="card hidden" id="wfReviewCard" style="border-color:var(--orange)">
+        <h2>Wi-Fi attendance to check <span class="badge b-orange" id="wfReviewCount"></span></h2>
+        <p class="muted">Marked through the office Wi-Fi because the face was not recognised (last 31 days). They already
+          count. Confirm the ones you know are right; reject one if the person was not really there (they see your reason in
+          the app). Someone who often needs the Wi-Fi should have their face reset (Staff tab), so they register again.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Employee</th><th>Showroom</th><th>When</th><th>Wi-Fi</th><th></th></tr></thead>
+            <tbody id="wfReviewRows"></tbody>
+          </table>
+        </div>
+        <div id="wfReviewMsg" class="msg"></div>
+      </div>
+
       <div class="card">
         <h2 id="tableTitle">Attendance</h2>
         <div class="table-wrap">
@@ -212,7 +232,8 @@
           </table>
         </div>
         <p class="muted">Times are Indian time. Face match shows the lowest score of the day.
-          Crossed-out entries were undone by the employee. When showing today, the page refreshes every minute.</p>
+          Crossed-out entries were undone by the employee (or rejected by a manager or HR). "Wi-Fi" = marked through the
+          office Wi-Fi because the face was not recognised. When showing today, the page refreshes every minute.</p>
       </div>
 
       <div class="card">
@@ -359,6 +380,7 @@
           <div><label for="actFrom">From</label><input id="actFrom" type="date"></div>
           <div><label for="actTo">To</label><input id="actTo" type="date"></div>
           <div><label for="actShowroom">Showroom</label><select id="actShowroom"></select></div>
+          <div><label for="actPerson">Person</label><select id="actPerson"><option value="">Everyone</option></select></div>
           <div><label for="actLevel">Show</label>
             <select id="actLevel">
               <option value="">Everything</option>
@@ -388,8 +410,10 @@
         <p id="actNote" class="muted"></p>
         <p class="muted">Times are Indian time. Check-ins, check-outs, undo, face registration and changes made in this
           dashboard are written automatically. Problems on the phones (no GPS, face not matching, no internet, errors,
-          freezes, crashes) come from phones with app version 1.1.0 or newer. Lines older than 60 days are removed
-          automatically. "Copy for Claude" copies the lines shown, ready to paste into Claude for a quick diagnosis.</p>
+          freezes, crashes) come from phones with app version 1.1.0 or newer; from app 1.4.0 every action in the app is
+          here too (screens opened, buttons, check-in steps, office Wi-Fi, leave, alarms), sent whenever the phone has internet. Everyday lines
+          are removed automatically after 30 days, problems (warnings and errors) after 60 days. "Copy for Claude" copies the lines shown,
+          ready to paste into Claude for a quick diagnosis.</p>
       </div>
     </main>
 
@@ -426,6 +450,11 @@
 
     <!-- ---------- Staff ---------- -->
     <main id="tab-staff" class="hidden">
+      <div id="sql15Notice" class="card hidden" style="border-color:var(--red)">
+        <b>One step is missing in Supabase.</b> Run <b>15_numbers_wifi_logs.sql</b> in Supabase (SQL Editor) to switch on
+        giving a mobile number to a new employee, attendance through the office Wi-Fi and the full activity log. Then press
+        Ctrl+F5 on this page.
+      </div>
       <div id="sql14Notice" class="card hidden" style="border-color:var(--red)">
         <b>One step is missing in Supabase.</b> Run <b>14_teams_faces_reminders.sql</b> in Supabase (SQL Editor) to switch on
         teams (Role and Reports to), manager logins, "one face, one login" and the check-in reminders. Then press Ctrl+F5 on this page.
@@ -580,6 +609,15 @@
         </div>
         <div id="srListMsg" class="msg"></div>
       </div>
+      <div class="card hidden" id="wifiCard">
+        <h2>Office Wi-Fi (attendance when the face is not recognised)</h2>
+        <p class="muted">Type each showroom's Wi-Fi name exactly as the phones show it (two or more: separate them with commas).
+          The system learns the showroom's Wi-Fi routers by itself from normal face check-ins made on that Wi-Fi; only those
+          routers, or ones you allow below, can be used. So a phone hotspot given the same name does not work. The Wi-Fi
+          password is never needed: do not type it anywhere.</p>
+        <div id="wifiBody"></div>
+        <div id="wifiMsg" class="msg"></div>
+      </div>
     </main>
 
     <!-- ---------- HR logins (master admin only) ---------- -->
@@ -682,6 +720,19 @@
         <button id="saveRemBtn" type="button">Save reminder</button>
         <div id="remMsg" class="msg"></div>
       </div>
+      <div class="card" style="max-width:560px">
+        <h2>Attendance through the office Wi-Fi</h2>
+        <label class="check"><input id="wfOn" type="checkbox"> Allow it when the face is not recognised</label>
+        <div class="row">
+          <div><label for="wfAfter">After how many face checks that did not match</label>
+            <input id="wfAfter" type="number" min="1" max="20" step="1"></div>
+        </div>
+        <p class="muted">The person must be inside the showroom's area and on one of the showroom's Wi-Fi routers (Showrooms
+          tab, Office Wi-Fi). The entry counts at once and is marked "Wi-Fi"; their team manager, showroom manager or HR can
+          confirm or reject it (Attendance tab). Needs app 1.4.0 or newer.</p>
+        <button id="saveWfBtn" type="button">Save</button>
+        <div id="wfMsg" class="msg"></div>
+      </div>
     </main>
   </div>
 
@@ -697,6 +748,7 @@
     </div>
     <label for="editShowroom">Showroom *</label><select id="editShowroom"></select>
     <label class="check"><input id="editActive" type="checkbox"> Active (can use the app)</label>
+    <p id="editReleasedNote" class="muted hidden"></p>
     <div class="row" style="margin-top:16px">
       <div style="flex:0 0 auto"><button id="saveEmpBtn" type="button">Save</button></div>
       <div style="flex:0 0 auto"><button id="closeEmpBtn" type="button" class="secondary">Cancel</button></div>
@@ -749,6 +801,18 @@
   </dialog>
 
   <!-- ---------- Approve / reject / cancel a leave request pop-up ---------- -->
+  <dialog id="wfDialog">
+    <h2>Reject this Wi-Fi entry</h2>
+    <p id="wfDlgText"></p>
+    <label for="wfDlgNote">Why is it rejected? * (the person sees this in the app)</label>
+    <input id="wfDlgNote" type="text" maxlength="300">
+    <div class="row" style="margin-top:14px">
+      <div style="flex:0 0 auto"><button id="wfDlgOk" type="button" class="danger">Reject</button></div>
+      <div style="flex:0 0 auto"><button id="wfDlgClose" type="button" class="secondary">Close</button></div>
+    </div>
+    <div id="wfDlgMsg" class="msg"></div>
+  </dialog>
+
   <dialog id="lvDialog">
     <h2 id="lvDlgTitle">Leave request</h2>
     <p id="lvDlgText"></p>
@@ -825,6 +889,9 @@
       .join('');
 
     const showroomName = (id) => showrooms.find((s) => s.id === id)?.name ?? '-';
+    // Who holds a mobile number now (someone who gave the number to a new employee does not count)
+    const holderOf = (phone) => employees.find((e) => e.phone === phone && !e.number_released_at)
+      || employees.find((e) => e.phone === phone);
 
     // Calls a database function and throws its error message
     async function rpc(name, params) {
@@ -838,11 +905,14 @@
       const { data, error } = await db.functions.invoke('admin-users', { body });
       if (error) {
         let message = error.message;
+        let details = null;
         try {
-          const details = await error.context.json();
+          details = await error.context.json();
           if (details?.error) message = details.error;
         } catch (_) { /* keep the general message */ }
-        throw new Error(message);
+        const problem = new Error(message);
+        problem.details = details; // e.g. { reuse_possible: true, old_name } (admin-users V7)
+        throw problem;
       }
       return data;
     }
@@ -865,23 +935,43 @@
     async function loadLogs(fromDate, toDate) {
       const start = dayStart(fromDate).toISOString();
       const end = new Date(dayStart(toDate).getTime() + DAY_MS).toISOString();
-      return fetchAll(() => db.from('attendance_logs')
-        .select('employee_id, check_type, logged_at, distance_meters, face_match_score, cancelled_at')
+      const read = (columns) => fetchAll(() => db.from('attendance_logs')
+        .select(columns)
         .gte('logged_at', start)
         .lt('logged_at', end)
         .order('logged_at', { ascending: true }));
+      const columns = 'employee_id, check_type, logged_at, distance_meters, face_match_score, cancelled_at';
+      try {
+        return await read(columns + ', id, method, review_status, review_note, reviewed_by_name'); // 15_numbers_wifi_logs.sql
+      } catch (err) {
+        if (err.code !== '42703') throw err;
+        return read(columns);
+      }
     }
 
     // Employees, page by page (there can be more than 1000). Works before 09 and 12 are run too.
     let needsSql09 = false;
     let needsSql12 = false; // true until 12_reports_and_hours.sql has been run
     let needsSql14 = false; // true until 14_teams_faces_reminders.sql has been run
+    let needsSql15 = false; // true until 15_numbers_wifi_logs.sql has been run
     async function loadEmployees() {
       const base = 'id, full_name, phone, is_active, showroom_id, face_registered_at';
       const details = ', employee_code, designation, email'; // 09_employee_details.sql
       const reports = ', weekly_off, created_at';           // 12_reports_and_hours.sql
       const team = ', team_role, reports_to';               // 14_teams_faces_reminders.sql
+      const released = ', number_released_at';              // 15_numbers_wifi_logs.sql
       const read = (columns) => fetchAll(() => db.from('employees').select(columns).order('id'));
+      try {
+        const rows = await read(base + details + reports + team + released);
+        needsSql09 = false;
+        needsSql12 = false;
+        needsSql14 = false;
+        needsSql15 = false;
+        return rows;
+      } catch (err) {
+        if (err.code !== '42703') throw err;
+      }
+      needsSql15 = true;
       try {
         const rows = await read(base + details + reports + team);
         needsSql09 = false;
@@ -916,7 +1006,8 @@
     async function loadShowrooms() {
       const base = 'id, name, latitude, longitude, radius_meters';
       const details = ', showroom_no, brand, address, city, pincode, contact_phone, email, contact_person';
-      let res = await db.from('showrooms').select(base + details + ', work_start, work_end').order('name');
+      let res = await db.from('showrooms').select(base + details + ', work_start, work_end, wifi_names').order('name');
+      if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base + details + ', work_start, work_end').order('name');
       if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base + details).order('name');
       if (res.error && res.error.code === '42703') res = await db.from('showrooms').select(base).order('name');
       if (res.error) throw res.error;
@@ -959,6 +1050,7 @@
         sel.innerHTML = `<option value="">${allLabel()}</option>` + showroomOptions();
         sel.value = current;
       }
+      fillActPerson();
 
       // Showroom choice in "Add an employee"
       const newSr = $('newShowroom');
@@ -1045,6 +1137,7 @@
         const counts = { 'In showroom': 0, 'Checked out': 0, 'Absent': 0, 'No check-out': 0, 'On leave': 0, 'Week off': 0, 'Holiday': 0 };
         let noFace = 0;
         let permissions = 0;
+        let wifiPeople = 0;
         const html = staff.map((emp) => {
           const mine = logs.filter((l) => l.employee_id === emp.id);
           const s = summarize(mine, dateStr);
@@ -1066,8 +1159,12 @@
           ].filter(Boolean).join('<br>');
           if (!emp.face_registered_at) noFace++;
           const entries = mine.map((l) =>
-            `<span class="entry${l.cancelled_at ? ' cancelled' : ''}">` +
-            `${l.check_type === 'in' ? 'IN' : 'OUT'} ${timeIST(l.logged_at)}</span>`).join('');
+            `<span class="entry${l.cancelled_at ? ' cancelled' : ''}"${l.review_status === 'rejected'
+              ? ` title="Rejected by ${escapeHtml(l.reviewed_by_name || '')}: ${escapeHtml(l.review_note || '')}"` : ''}>` +
+            `${l.check_type === 'in' ? 'IN' : 'OUT'} ${timeIST(l.logged_at)}` +
+            `${l.method === 'wifi' ? ' <span class="badge b-purple">Wi-Fi</span>' : ''}` +
+            `${l.review_status === 'rejected' ? ' (rejected)' : ''}</span>`).join('');
+          if (mine.some((l) => l.method === 'wifi' && !l.cancelled_at)) wifiPeople++;
           return `<tr>
             <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span>
               ${emp.face_registered_at ? '' : '<br><span class="badge b-orange">Face not registered</span>'}</td>
@@ -1096,7 +1193,9 @@
           ['Week off / holiday', counts['Week off'] + counts['Holiday']],
           ['Permission', permissions],
           ['Face not registered', noFace],
+          ...(wifiPeople ? [['Marked through Wi-Fi', wifiPeople]] : []),
         ].map(([label, n]) => `<div class="chip"><b>${n}</b><span>${label}</span></div>`).join('');
+        renderWifiReview();
       } catch (err) {
         $('appError').textContent = 'Could not load attendance: ' + (err.message || err);
       } finally {
@@ -1171,6 +1270,7 @@
       if (!isManager()) renderImportLog();
       renderDuplicates();
       $('sql14Notice').classList.toggle('hidden', !(isMaster() && needsSql14 && !needsSql12 && !needsSql09));
+      $('sql15Notice').classList.toggle('hidden', !(isMaster() && needsSql15 && !needsSql14 && !needsSql12 && !needsSql09));
     }
 
     // The staff table, filtered by the search box
@@ -1187,7 +1287,8 @@
         const me = isManager() && emp.id === access.employee_id;  // a manager's own row: HR change it
         return `<tr>
           <td><b>${escapeHtml(emp.full_name)}</b>${me ? ' <span class="badge b-blue">You</span>' : ''}<br><span class="muted">${escapeHtml(emp.phone)}${
-            emp.employee_code ? ' · Code ' + escapeHtml(emp.employee_code) : ''}</span></td>
+            emp.employee_code ? ' · Code ' + escapeHtml(emp.employee_code) : ''}</span>${emp.number_released_at
+            ? `<br><span class="muted">Number now with ${escapeHtml(holderOf(emp.phone)?.id !== emp.id ? holderOf(emp.phone).full_name : 'a new employee')}</span>` : ''}</td>
           <td class="soft">${escapeHtml(emp.designation || '-')}</td>
           <td class="soft">${escapeHtml(showroomName(emp.showroom_id))}</td>
           <td>${teamCell(emp, me)}</td>
@@ -1196,12 +1297,14 @@
           <td>${emp.face_registered_at
               ? '<span class="badge b-green">Registered</span><br><span class="muted">' + dateIST(emp.face_registered_at) + '</span>'
               : '<span class="badge b-orange">Not registered</span>'}</td>
-          <td>${emp.is_active ? '<span class="badge b-green">Active</span>' : '<span class="badge b-grey">Inactive</span>'}</td>
+          <td>${emp.is_active ? '<span class="badge b-green">Active</span>'
+              : emp.number_released_at ? '<span class="badge b-grey">Left</span><br><span class="muted">number given away</span>'
+              : '<span class="badge b-grey">Inactive</span>'}</td>
           <td class="actions">${me ? '' : `
             <button type="button" class="secondary" data-act="edit" data-id="${emp.id}">Edit</button>${isManager() ? '' : `
             <button type="button" class="secondary" data-act="activity" data-id="${emp.id}">Activity</button>
             <button type="button" class="secondary" data-act="face" data-id="${emp.id}">Reset face</button>
-            <button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>`}
+            ${emp.number_released_at ? '' : `<button type="button" class="secondary" data-act="password" data-id="${emp.id}">Reset password</button>`}`}
             ${isMaster() ? `<button type="button" class="secondary danger" data-act="delete" data-id="${emp.id}">Delete</button>` : ''}`}
           </td>
         </tr>`;
@@ -1281,16 +1384,31 @@
           team_role: $('newRole').value || 'staff',
           reports_to: $('newReportsTo').value ? Number($('newReportsTo').value) : null,
         };
-        await callAdminUsers({
+        const request = {
           action: 'create', full_name: name, phone, showroom_id: showroomId,
           designation, employee_code: code, email, ...team,
-        });
+        };
+        let reply;
+        try {
+          reply = await callAdminUsers(request);
+        } catch (err) {
+          // The number belonged to someone who left: give it to the new person? (admin-users V7)
+          if (!err.details?.reuse_possible) throw err;
+          const old = err.details.old_name;
+          if (!confirm(`${phone} belonged to ${old}, who has left.\n\nGive this mobile number to ${name}?\n\n` +
+                       `${old}'s old login will stop working. Their attendance history stays in the system.`)) {
+            setMsg('staffMsg', `Not added. ${phone} still belongs to ${old}'s old record.`, false);
+            return;
+          }
+          reply = await callAdminUsers({ ...request, reuse_number: true });
+        }
+        const tookOver = reply?.reused_from ? ` (took over the number from ${reply.reused_from})` : '';
         let note = '';
         const weeklyOff = $('newWeeklyOff').value;
         if (weeklyOff !== '' && !needsSql12) {
           try {
             await loadBase();
-            const added = employees.find((x) => x.phone === phone);
+            const added = holderOf(phone);
             if (added) await rpc('set_weekly_off', { p_employee_id: added.id, p_weekly_off: Number(weeklyOff) });
           } catch (err) {
             note = ' The weekly off could not be saved: ' + (err.message || err);
@@ -1298,9 +1416,9 @@
         }
         for (const id of ['newName', 'newPhone', 'newDesignation', 'newCode', 'newEmail', 'newWeeklyOff']) $(id).value = '';
         await renderStaff();
-        const boss = employees.find((x) => x.phone === phone)?.reports_to;
+        const boss = holderOf(phone)?.reports_to;
         const bossName = boss ? employees.find((x) => x.id === boss)?.full_name : null;
-        setMsg('staffMsg', `${name} added${bossName ? ` (reports to ${bossName})` : ''}. ` +
+        setMsg('staffMsg', `${name} added${bossName ? ` (reports to ${bossName})` : ''}${tookOver}. ` +
           `Their login and first password: ${phone}.${note}`, !note);
       } catch (err) {
         setMsg('staffMsg', err.message || String(err), false);
@@ -1366,6 +1484,11 @@
       $('editExtra').classList.toggle('hidden', needsSql09);
       $('editShowroom').innerHTML = showroomOptions(emp.showroom_id);
       $('editActive').checked = emp.is_active;
+      const gone = Boolean(emp.number_released_at) && !emp.is_active;
+      $('editActive').disabled = gone;
+      $('editReleasedNote').classList.toggle('hidden', !gone);
+      $('editReleasedNote').textContent = gone ? `${emp.full_name}'s mobile number was given to a new employee, so this ` +
+        'record cannot be made active again. To bring them back, add them again with a new mobile number.' : '';
       setMsg('empMsg', '');
       $('empDialog').showModal();
     }
@@ -1606,8 +1729,11 @@
         else r.phone = mobile.phone;
 
         if (r.phone && !problems.length) {
-          const existing = employees.find((e) => e.phone === r.phone);
-          if (existing) {
+          const existing = employees.find((e) => e.phone === r.phone && !e.number_released_at);
+          if (existing && !existing.is_active && !needsSql15) {
+            problems.push(`This number belonged to ${existing.full_name} (${showroomName(existing.showroom_id)}), who is ` +
+              'inactive. To give it to this new person, add them one by one with "Add an employee".');
+          } else if (existing) {
             problems.push(`Already has a login (${existing.full_name}, ${showroomName(existing.showroom_id)}` +
               (existing.is_active ? ').' : ', inactive).'));
           } else if (firstWithPhone.has(r.phone)) {
@@ -1948,6 +2074,7 @@
         setMsg('srListMsg', '');
         if (isMaster() && !$('srId').value && !$('srNo').value) $('srNo').value = nextShowroomNo();
         if (!needsSql12) await loadWorkSettings().catch(() => {});
+        await renderWifi();
         $('srHoursHint').textContent = needsSql12 ? 'Working hours need 12_reports_and_hours.sql.'
           : `Default hours: ${minText(toMin(workSettings.work_start))} to ${minText(toMin(workSettings.work_end))} (Settings tab).`;
       } catch (err) {
@@ -2865,6 +2992,18 @@
     }
 
     // ---------- Activity tab ----------
+    // The "Person" list: everyone in the chosen showroom (or all), newest login first when two share a mobile number
+    function fillActPerson() {
+      const sel = $('actPerson');
+      const current = sel.value;
+      const sid = $('actShowroom').value;
+      const list = employees.filter((e) => !sid || String(e.showroom_id) === sid);
+      sel.innerHTML = '<option value="">Everyone</option>' + list.map((e) =>
+        `<option value="${e.id}">${escapeHtml(e.full_name)}${e.phone ? ' · ' + escapeHtml(e.phone) : ''}` +
+        `${e.number_released_at ? ' (left, number given away)' : (e.is_active === false ? ' (inactive)' : '')}</option>`).join('');
+      sel.value = list.some((e) => String(e.id) === current) ? current : '';
+    }
+
     const MAX_ACTIVITY = 5000;   // lines loaded at most (newest first)
     const SHOW_ACTIVITY = 1500;  // lines drawn in the table at most (CSV has all)
     let activityRows = [];
@@ -2875,6 +3014,7 @@
       const start = dayStart(from).toISOString();
       const end = new Date(dayStart(to).getTime() + DAY_MS).toISOString();
       const sid = $('actShowroom').value;
+      const pid = $('actPerson').value;
       const level = $('actLevel').value;
       const rows = [];
       for (let page = 0; rows.length < MAX_ACTIVITY; page++) {
@@ -2885,6 +3025,7 @@
           .order('happened_at', { ascending: false })
           .order('id', { ascending: false });
         if (sid) q = q.eq('showroom_id', Number(sid));
+        if (pid) q = q.eq('employee_id', Number(pid));
         if (level === 'problems') q = q.in('level', ['warning', 'error']);
         if (level === 'error') q = q.eq('level', 'error');
         const { data, error } = await q.range(page * 1000, page * 1000 + 999);
@@ -2962,7 +3103,7 @@
       $('actTitle').textContent = 'Activity - ' + (from === to ? dateIST(dayStart(from))
         : dateIST(dayStart(from)) + ' to ' + dateIST(dayStart(to)));
       $('actNote').textContent =
-        (activityRows.length >= MAX_ACTIVITY ? `Only the newest ${MAX_ACTIVITY} lines were loaded: choose fewer days or one showroom. ` : '') +
+        (activityRows.length >= MAX_ACTIVITY ? `Only the newest ${MAX_ACTIVITY} lines were loaded: choose fewer days, one showroom or one person. ` : '') +
         (shown.length > SHOW_ACTIVITY ? `The table shows the newest ${SHOW_ACTIVITY}; Download CSV has all ${shown.length}.` : '');
     }
 
@@ -3011,7 +3152,8 @@
       const search = $('actSearch').value.trim();
       const text = CLAUDE_INTRO + '\nBelow is the activity log from the admin dashboard. Please read it and tell me, in simple ' +
         'words, which problems you see, the most likely cause of each, and what the staff, HR or the admin should do.\n\n' +
-        `Showroom: ${$('actShowroom').selectedOptions[0]?.textContent || 'All'} · ${$('actFrom').value} to ${$('actTo').value} · ` +
+        `Showroom: ${$('actShowroom').selectedOptions[0]?.textContent || 'All'} · ` +
+        `Person: ${$('actPerson').selectedOptions[0]?.textContent || 'Everyone'} · ${$('actFrom').value} to ${$('actTo').value} · ` +
         `${$('actLevel').selectedOptions[0]?.textContent || 'Everything'}${search ? ' · search: ' + search : ''} · ` +
         `${shown.length} lines, newest first${shown.length > max ? ` (only the newest ${max} are copied)` : ''}\n` +
         'Time (India) | Employee | Showroom | Level | What happened | Code | Details | App version | Phone\n' +
@@ -3040,17 +3182,19 @@
     });
 
     $('actLoadBtn').addEventListener('click', renderActivity);
-    for (const id of ['actFrom', 'actTo', 'actShowroom', 'actLevel']) $(id).addEventListener('change', renderActivity);
+    for (const id of ['actFrom', 'actTo', 'actShowroom', 'actPerson', 'actLevel']) $(id).addEventListener('change', renderActivity);
     $('actSearch').addEventListener('input', drawActivity);
 
-    // From the Staff tab: the last 7 days of one employee
+    // From the Staff tab: the last 7 days of one employee (only their lines are loaded)
     function openActivityFor(emp) {
       const today = todayIST();
       $('actFrom').value = ymd(new Date(dayStart(today).getTime() - 6 * DAY_MS));
       $('actTo').value = today;
       $('actShowroom').value = '';
+      fillActPerson();
+      $('actPerson').value = String(emp.id);
       $('actLevel').value = '';
-      $('actSearch').value = emp.phone;
+      $('actSearch').value = '';
       showTab('activity');
     }
 
@@ -3817,6 +3961,203 @@
       }
     });
 
+
+    // ======================= Office Wi-Fi (15_numbers_wifi_logs.sql) =======================
+    const whenIST = (iso) => (iso ? `${dateIST(iso)} ${timeIST(iso)}` : '-');
+
+    // Showrooms tab: each showroom's Wi-Fi name(s) and the routers seen there
+    async function renderWifi() {
+      const card = $('wifiCard');
+      if (isManager()) return card.classList.add('hidden');
+      card.classList.remove('hidden');
+      if (needsSql15) {
+        $('wifiBody').innerHTML = '<p class="error">Run 15_numbers_wifi_logs.sql in Supabase first.</p>';
+        return;
+      }
+      let routers = [];
+      try {
+        routers = await fetchAll(() => db.from('showroom_wifi')
+          .select('id, showroom_id, ssid, bssid, allowed, allowed_by_name, face_checks, wifi_tries, last_seen')
+          .order('last_seen', { ascending: false }));
+      } catch (err) {
+        $('wifiBody').innerHTML = '<p class="error">Could not load the Wi-Fi routers: ' + escapeHtml(err.message || err) + '</p>';
+        return;
+      }
+      wifiRouters = routers;
+      $('wifiBody').innerHTML = myShowrooms().map((s) => {
+        const mine = routers.filter((r) => r.showroom_id === s.id);
+        const rows = mine.map((r) => `<tr>
+            <td>${escapeHtml(r.ssid || '-')}</td>
+            <td><code>${escapeHtml(r.bssid)}</code></td>
+            <td>${r.face_checks}</td>
+            <td>${r.wifi_tries}</td>
+            <td>${whenIST(r.last_seen)}</td>
+            <td>${r.allowed ? `<span class="badge b-green">Allowed</span><br><span class="muted">${escapeHtml(r.allowed_by_name || '')}</span>`
+              : '<span class="badge b-orange">Not allowed</span>'}</td>
+            <td class="actions">${r.allowed
+              ? `<button type="button" class="secondary" data-wf="block" data-id="${r.id}">Block</button>`
+              : `<button type="button" data-wf="allow" data-id="${r.id}">Allow</button>`}
+              <button type="button" class="secondary danger" data-wf="remove" data-id="${r.id}">Remove</button></td>
+          </tr>`).join('');
+        return `<div style="margin-top:18px">
+            <h3 style="margin:0 0 6px">${escapeHtml(s.name)}</h3>
+            <div class="row">
+              <div style="flex:2 1 320px"><label for="wfNames${s.id}">Wi-Fi name(s)</label>
+                <input id="wfNames${s.id}" type="text" value="${escapeHtml((s.wifi_names || []).join(', '))}" placeholder="for example PillaiMotors-OMR"></div>
+              <div style="flex:0 0 auto"><button type="button" data-wf="names" data-id="${s.id}">Save Wi-Fi name</button></div>
+            </div>
+            ${(s.wifi_names || []).length ? '' : '<p class="muted">No Wi-Fi name yet: attendance through Wi-Fi is off for this showroom.</p>'}
+            ${mine.length ? `<div class="table-wrap"><table>
+                <thead><tr><th>Wi-Fi name</th><th>Router ID</th><th>Face check-ins</th><th>Wi-Fi tries</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
+                <tbody>${rows}</tbody></table></div>`
+              : '<p class="muted">No Wi-Fi router seen here yet. Routers appear after someone checks in with their face while connected to the showroom Wi-Fi (app 1.4.0 or newer).</p>'}
+          </div>`;
+      }).join('') || '<p class="muted">No showrooms.</p>';
+    }
+    let wifiRouters = [];
+
+    $('wifiBody').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-wf]');
+      if (!btn) return;
+      const id = Number(btn.dataset.id);
+      const act = btn.dataset.wf;
+      try {
+        if (act === 'names') {
+          const names = $('wfNames' + id).value.split(',').map((x) => x.trim()).filter(Boolean);
+          btn.disabled = true;
+          await rpc('save_showroom_wifi_names', { p_showroom_id: id, p_names: names });
+          await loadBase();
+          setMsg('wifiMsg', `${showroomName(id)}: Wi-Fi ${names.length ? 'name saved: ' + names.join(', ') : 'names removed (Wi-Fi attendance off here)'}.`, true);
+        } else {
+          const r = wifiRouters.find((x) => x.id === id);
+          if (!r) return;
+          if (act === 'allow' && !r.face_checks && !confirm(`Allow router ${r.bssid} ("${r.ssid}") for attendance?\n\n` +
+              'It was never seen during a normal face check-in. Allow it only if you are sure it is the showroom\'s own ' +
+              'Wi-Fi router, not someone\'s phone hotspot.')) return;
+          if (act === 'remove' && !confirm(`Remove router ${r.bssid} ("${r.ssid}") from the list?`)) return;
+          btn.disabled = true;
+          if (act === 'remove') await rpc('delete_wifi_router', { p_router_id: id });
+          else await rpc('set_wifi_router', { p_router_id: id, p_allowed: act === 'allow' });
+          setMsg('wifiMsg', `Router ${r.bssid}: ${{ allow: 'allowed', block: 'blocked', remove: 'removed' }[act]}.`, true);
+        }
+        await renderWifi();
+      } catch (err) {
+        btn.disabled = false;
+        setMsg('wifiMsg', err.message || String(err), false);
+      }
+    });
+
+    // Attendance tab: Wi-Fi entries that nobody has checked yet
+    let wifiToCheck = [];
+    async function renderWifiReview() {
+      const card = $('wfReviewCard');
+      if (needsSql15) return card.classList.add('hidden');
+      const since = new Date(Date.now() - 31 * DAY_MS).toISOString();
+      const { data, error } = await db.from('attendance_logs')
+        .select('id, employee_id, check_type, logged_at, distance_meters, wifi_ssid, wifi_bssid')
+        .eq('method', 'wifi').is('review_status', null).is('cancelled_at', null)
+        .gte('logged_at', since).order('logged_at', { ascending: false }).limit(200);
+      if (error) return card.classList.add('hidden');
+      const sid = $('showroom').value;
+      wifiToCheck = (data || []).filter((l) => {
+        const emp = employees.find((e) => e.id === l.employee_id);
+        return emp && !(isManager() && emp.id === access.employee_id) && (!sid || String(emp.showroom_id) === sid);
+      });
+      card.classList.toggle('hidden', !wifiToCheck.length);
+      $('wfReviewCount').textContent = wifiToCheck.length || '';
+      $('wfReviewRows').innerHTML = wifiToCheck.map((l) => {
+        const emp = employees.find((e) => e.id === l.employee_id);
+        return `<tr>
+          <td><b>${escapeHtml(emp.full_name)}</b><br><span class="muted">${escapeHtml(emp.phone)}</span></td>
+          <td>${escapeHtml(showroomName(emp.showroom_id))}</td>
+          <td>${l.check_type === 'in' ? 'Check-in' : 'Check-out'}<br><span class="muted">${whenIST(l.logged_at)}</span></td>
+          <td>${escapeHtml(l.wifi_ssid || '-')}<br><span class="muted">${l.distance_meters ?? '-'} m from the showroom</span></td>
+          <td class="actions">
+            <button type="button" data-wfr="ok" data-id="${l.id}">Confirm</button>
+            <button type="button" class="secondary danger" data-wfr="reject" data-id="${l.id}">Reject</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    let wfRejecting = null;
+    $('wfReviewRows').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-wfr]');
+      if (!btn) return;
+      const l = wifiToCheck.find((x) => x.id === Number(btn.dataset.id));
+      if (!l) return;
+      const emp = employees.find((x) => x.id === l.employee_id);
+      if (btn.dataset.wfr === 'reject') {
+        wfRejecting = l;
+        $('wfDlgText').textContent = `${emp ? emp.full_name : 'Employee'}: Wi-Fi ${l.check_type === 'in' ? 'check-in' : 'check-out'} ` +
+          `of ${whenIST(l.logged_at)}. A rejected entry no longer counts.`;
+        $('wfDlgNote').value = '';
+        setMsg('wfDlgMsg', '');
+        $('wfDialog').showModal();
+        $('wfDlgNote').focus();
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await rpc('review_wifi_entry', { p_log_id: l.id, p_ok: true, p_note: null });
+        setMsg('wfReviewMsg', `Confirmed: ${emp ? emp.full_name + ', ' : ''}${whenIST(l.logged_at)}.`, true);
+        await renderWifiReview();
+      } catch (err) {
+        btn.disabled = false;
+        setMsg('wfReviewMsg', err.message || String(err), false);
+      }
+    });
+    $('wfDlgClose').addEventListener('click', () => $('wfDialog').close());
+    $('wfDlgOk').addEventListener('click', async () => {
+      const l = wfRejecting;
+      if (!l) return;
+      const note = $('wfDlgNote').value.trim();
+      if (!note) return setMsg('wfDlgMsg', 'Please write why it is rejected.', false);
+      $('wfDlgOk').disabled = true;
+      try {
+        await rpc('review_wifi_entry', { p_log_id: l.id, p_ok: false, p_note: note });
+        $('wfDialog').close();
+        const emp = employees.find((x) => x.id === l.employee_id);
+        setMsg('wfReviewMsg', `Rejected: ${emp ? emp.full_name + ', ' : ''}${whenIST(l.logged_at)}. It no longer counts.`, true);
+        await refresh();
+      } catch (err) {
+        setMsg('wfDlgMsg', err.message || String(err), false);
+      } finally {
+        $('wfDlgOk').disabled = false;
+      }
+    });
+
+    // Settings tab: Wi-Fi attendance on or off, and after how many face checks
+    async function loadWifiSettings() {
+      try {
+        const { data, error } = await db.from('work_settings')
+          .select('wifi_fallback_on, wifi_after_failures').eq('id', 1).maybeSingle();
+        if (error) throw error;
+        $('wfOn').checked = data?.wifi_fallback_on ?? true;
+        $('wfAfter').value = data?.wifi_after_failures ?? 5;
+        $('saveWfBtn').disabled = false;
+        setMsg('wfMsg', '');
+      } catch (err) {
+        $('saveWfBtn').disabled = true;
+        setMsg('wfMsg', ['42703', '42P01', 'PGRST204', 'PGRST205'].includes(err.code)
+          ? 'Run 15_numbers_wifi_logs.sql in Supabase first.' : 'Could not load: ' + (err.message || err), false);
+      }
+    }
+    $('saveWfBtn').addEventListener('click', async () => {
+      const after = parseInt($('wfAfter').value, 10);
+      $('saveWfBtn').disabled = true;
+      try {
+        await rpc('save_wifi_settings', { p_on: $('wfOn').checked, p_after_failures: after });
+        setMsg('wfMsg', $('wfOn').checked
+          ? `Saved. After ${after} face checks that did not match, staff can use the showroom Wi-Fi.`
+          : 'Saved. Attendance through the office Wi-Fi is switched off.', true);
+      } catch (err) {
+        setMsg('wfMsg', err.message || String(err), false);
+      } finally {
+        $('saveWfBtn').disabled = false;
+      }
+    });
+
     // ======================= Tabs =======================
     function showTab(tab) {
       if (!isMaster() && (tab === 'users' || tab === 'settings')) tab = 'attendance';
@@ -3833,7 +4174,7 @@
       if (tab === 'staff') renderStaff();
       if (tab === 'showrooms') renderShowrooms();
       if (tab === 'users') renderUsers();
-      if (tab === 'settings') { loadSettings(); loadReminderSettings(); }
+      if (tab === 'settings') { loadSettings(); loadReminderSettings(); loadWifiSettings(); }
     }
 
     document.querySelectorAll('nav.tabs button').forEach((b) =>
